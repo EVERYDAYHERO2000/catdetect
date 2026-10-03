@@ -1,10 +1,11 @@
 {
   "domain": "catdetect",
   "name": "CatDetect",
-  "codeowners": [],
+  "codeowners": ["@EVERYDAYHERO2000"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/",
+  "documentation": "https://github.com/EVERYDAYHERO2000/catdetect",
+  "issue_tracker": "https://github.com/EVERYDAYHERO2000/catdetect/issues",
   "integration_type": "hub",
   "iot_class": "local_push",
   "requirements": [],
