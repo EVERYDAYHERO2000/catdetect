@@ -36,6 +36,8 @@ class Settings:
     device: str | None = None  # None — ultralytics выберет сам (cuda/mps/cpu)
     base_detector: str = "yolo26m.pt"
     base_classifier: str = "yolo26s-cls.pt"
+    # torch — как есть (GPU/CPU); openvino/onnx — экспорт для быстрого инференса на CPU
+    inference_format: str = "torch"
     run_pipeline: bool = True
     cookie_secure: bool = False
 
@@ -95,6 +97,8 @@ def load_settings() -> Settings:
         s.base_detector = v
     if v := os.environ.get("CATDETECT_BASE_CLASSIFIER"):
         s.base_classifier = v
+    if v := os.environ.get("CATDETECT_INFERENCE_FORMAT"):
+        s.inference_format = v.lower()
     if os.environ.get("CATDETECT_DISABLE_PIPELINE", "").lower() in ("1", "true", "yes"):
         s.run_pipeline = False
     if os.environ.get("CATDETECT_COOKIE_SECURE", "").lower() in ("1", "true", "yes"):

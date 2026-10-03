@@ -56,7 +56,7 @@ def cancel_job(job_id: int, request: Request, _: Auth):
 def list_models(_: Auth, db: Db, rt: Rt):
     return {
         "models": db.exec(select(MlModel).order_by(col(MlModel.id).desc())).all(),
-        "runtime": rt.detector_info,
+        "runtime": rt.detector_status(),
     }
 
 

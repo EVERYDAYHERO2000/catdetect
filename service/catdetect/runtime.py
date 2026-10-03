@@ -105,10 +105,11 @@ class Runtime:
         weights.parent.mkdir(parents=True, exist_ok=True)
         self.detector_info = {"status": "loading", "weights": weights.name}
         try:
-            det = Detector(weights, device=self.settings.device)
+            det = Detector(weights, device=self.settings.device, fmt=self.settings.inference_format)
             det.warmup()
             self.detector = det
-            self.detector_info = {"status": "ready", "weights": weights.name, "model_id": det_row.id if det_row else None,
+            self.detector_info = {"status": "ready", "weights": weights.name,
+                                  "format": self.settings.inference_format, "model_id": det_row.id if det_row else None,
                                   "classes": [n for n in det.names.values() if n in ("cat", "dog")]}
         except Exception as e:  # noqa: BLE001
             log.exception("Не удалось загрузить детектор")
@@ -116,14 +117,21 @@ class Runtime:
             return
         if cls_row:
             try:
-                self.identifier = Identifier(self._resolve(cls_row.path), {k: int(v) for k, v in cls_row.classes.items()
-                                                                          if v is not None}, self.settings.device)
+                class_map = {k: int(v) for k, v in cls_row.classes.items() if v is not None}
+                self.identifier = Identifier(self._resolve(cls_row.path), class_map, self.settings.device,
+                                             fmt=self.settings.inference_format)
                 self.detector_info["classifier_id"] = cls_row.id
             except Exception:  # noqa: BLE001
                 log.exception("Не удалось загрузить классификатор")
                 self.identifier = None
         else:
             self.identifier = None
+
+    def detector_status(self) -> dict:
+        info = dict(self.detector_info)
+        if self.detector is not None and self.detector.avg_ms is not None:
+            info["avg_ms"] = round(self.detector.avg_ms, 1)
+        return info
 
     # --- конфигурация ---
 

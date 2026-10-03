@@ -26,7 +26,7 @@ export default function Dashboard() {
   if (error) return <div className="error">{error}</div>;
   if (!state) return <div className="muted">Загрузка…</div>;
 
-  const det = state.service.detector as { status?: string; weights?: string; error?: string };
+  const det = state.service.detector as { status?: string; weights?: string; error?: string; format?: string; avg_ms?: number };
   const camName = (id: number) => state.cameras.find((c) => c.id === id)?.name ?? `#${id}`;
   const identName = (id: number | null) => (id ? state.identities.find((i) => i.id === id)?.name : null);
   const events = [...liveEvents, ...(initialEvents ?? []).filter((e) => !liveEvents.some((l) => l.id === e.id))].slice(0, 30);
@@ -37,7 +37,7 @@ export default function Dashboard() {
         <h1 style={{ margin: 0 }}>Обзор</h1>
         <div className="row small">
           <span className={`badge ${det.status === "ready" ? "ok" : det.status === "error" ? "danger" : "warn"}`}>
-            модель: {det.status === "ready" ? det.weights : det.status === "loading" ? "загружается…" : det.error ?? det.status}
+            модель: {det.status === "ready" ? `${det.weights}${det.format && det.format !== "torch" ? ` (${det.format})` : ""}${det.avg_ms ? ` · ${Math.round(det.avg_ms)} мс/кадр` : ""}` : det.status === "loading" ? "загружается…" : det.error ?? det.status}
           </span>
           <span className={`badge ${connected ? "ok" : "warn"}`}>{connected ? "онлайн" : "нет связи"}</span>
         </div>

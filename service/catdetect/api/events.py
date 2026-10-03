@@ -48,7 +48,7 @@ def full_state(_: Auth, db: Db, rt: Rt):
     cams = db.exec(select(Camera).order_by(Camera.id)).all()
     idents = db.exec(select(Identity).order_by(Identity.id)).all()
     return {
-        "service": {"version": __import__("catdetect").__version__, "detector": rt.detector_info},
+        "service": {"version": __import__("catdetect").__version__, "detector": rt.detector_status()},
         "cameras": [{
             "id": c.id, "slug": c.slug, "name": c.name, "species": c.species, "enabled": c.enabled,
             "has_direction": bool(c.direction), "state": st["cameras"].get(c.id),

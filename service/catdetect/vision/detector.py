@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -27,18 +28,46 @@ def crop(frame: np.ndarray, box: Box, pad: float = 0.15) -> np.ndarray:
     return frame[int(y1 * h):max(int(y2 * h), int(y1 * h) + 1), int(x1 * w):max(int(x2 * w), int(x1 * w) + 1)]
 
 
+def prepare_weights(weights: str | Path, fmt: str | None, imgsz: int) -> tuple[str, str | None]:
+    """Экспорт .pt в формат для быстрого инференса на CPU (OpenVINO/ONNX) с кешированием рядом с весами.
+
+    Возвращает путь для загрузки и устройство (для экспортированных моделей — None).
+    """
+    from ultralytics import YOLO
+
+    weights = Path(weights)
+    if not fmt or fmt in ("torch", "pt"):
+        return str(weights), "keep"
+    if fmt == "openvino":
+        target = weights.with_name(f"{weights.stem}_openvino_model")
+        ready = (target / f"{weights.stem}.xml").exists()
+    elif fmt == "onnx":
+        target = weights.with_suffix(".onnx")
+        ready = target.exists()
+    else:
+        raise ValueError(f"Неизвестный формат инференса: {fmt}")
+    if not weights.exists():
+        YOLO(str(weights))  # скачать базовые веса
+    if not ready or target.stat().st_mtime < weights.stat().st_mtime:
+        log.info("Экспорт %s в %s (один раз, займёт до минуты)…", weights.name, fmt)
+        target = Path(YOLO(str(weights)).export(format=fmt, imgsz=imgsz, verbose=False))
+    return str(target), None
+
+
 class Detector:
-    def __init__(self, weights: str | Path, device: str | None = None, imgsz: int = 640):
+    def __init__(self, weights: str | Path, device: str | None = None, imgsz: int = 640, fmt: str | None = None):
         from ultralytics import YOLO
 
-        self.weights = str(weights)
-        self.device = device
+        path, dev = prepare_weights(weights, fmt, imgsz)
+        self.weights = path
+        self.device = device if dev == "keep" else dev
         self.imgsz = imgsz
-        self.model = YOLO(self.weights)
+        self.model = YOLO(path, task="detect")
         self._lock = threading.Lock()  # одна модель на все камеры
         self.names: dict[int, str] = dict(self.model.names)
         self._ids = {name: i for i, name in self.names.items()}
-        log.info("Детектор загружен: %s", self.weights)
+        self.avg_ms: float | None = None  # скользящее среднее времени кадра
+        log.info("Детектор загружен: %s", path)
 
     def class_ids(self, species: Iterable[str]) -> list[int]:
         return [self._ids[s] for s in species if s in self._ids]
@@ -48,9 +77,12 @@ class Detector:
         if not classes:
             return []
         with self._lock:
+            t0 = time.perf_counter()
             res = self.model.predict(
                 frame, conf=min_conf, classes=classes, imgsz=self.imgsz, device=self.device, verbose=False
             )[0]
+            ms = (time.perf_counter() - t0) * 1000
+            self.avg_ms = ms if self.avg_ms is None else self.avg_ms * 0.9 + ms * 0.1
         out: list[Detection] = []
         if res.boxes is None:
             return out
@@ -65,11 +97,13 @@ class Detector:
 class Identifier:
     """Классификатор личности. Имена классов модели сопоставлены с Identity.id через class_map."""
 
-    def __init__(self, weights: str | Path, class_map: dict[str, int], device: str | None = None):
+    def __init__(self, weights: str | Path, class_map: dict[str, int], device: str | None = None,
+                 fmt: str | None = None, imgsz: int = 224):
         from ultralytics import YOLO
 
-        self.model = YOLO(str(weights))
-        self.device = device
+        path, dev = prepare_weights(weights, fmt, imgsz)
+        self.model = YOLO(path, task="classify")
+        self.device = device if dev == "keep" else dev
         self.class_map = class_map
         self._lock = threading.Lock()
         log.info("Классификатор загружен: %s (%d классов)", weights, len(class_map))

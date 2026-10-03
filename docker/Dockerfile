@@ -12,14 +12,14 @@ ENV PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
-# PyTorch с CUDA 12.8 (поддерживает и RTX 50xx); без GPU работает на CPU
-ARG TORCH_INDEX=https://download.pytorch.org/whl/cu128
+# По умолчанию PyTorch для CPU; для NVIDIA см. compose.nvidia.yml (TORCH_INDEX=…/cu128)
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cpu
 RUN pip install torch torchvision --index-url ${TORCH_INDEX}
 WORKDIR /app
 COPY service/ ./service
-RUN pip install "./service[ml]"
+RUN pip install "./service[ml]" openvino
 COPY --from=web /web/dist ./web
-ENV CATDETECT_DATA_DIR=/data CATDETECT_WEB_DIR=/app/web
+ENV CATDETECT_DATA_DIR=/data CATDETECT_WEB_DIR=/app/web CATDETECT_INFERENCE_FORMAT=openvino
 VOLUME /data
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"

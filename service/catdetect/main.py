@@ -50,7 +50,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "version": __version__, "detector": runtime.detector_info}
+        return {"ok": True, "version": __version__, "detector": runtime.detector_status()}
 
     web = settings.web_dir
     if (web / "index.html").exists():

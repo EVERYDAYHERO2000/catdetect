@@ -1,6 +1,5 @@
-# Windows + Docker Desktop (WSL2) + NVIDIA. Запуск из корня репозитория:
-#   docker compose -f docker/compose.yml up -d --build
-# Данные (БД с паролями регистраторов, кадры, модели) — в C:\catdetect-data, вне Яндекс Диска.
+# Запуск из корня репозитория:  docker compose -f docker/compose.yml up -d --build
+# Инференс на процессоре через OpenVINO (Windows + Docker Desktop/WSL2, TrueNAS, Linux).
 services:
   catdetect:
     build:
@@ -13,16 +12,9 @@ services:
       - "8000:8000"
     shm_size: 2gb  # загрузчикам данных при обучении
     volumes:
-      - C:/catdetect-data:/data
+      - C:/catdetect-data:/data  # на Linux/TrueNAS замените на свой путь, например /mnt/pool/apps/catdetect
     environment:
       TZ: Europe/Moscow
     env_file:
       - path: C:/catdetect-data/.env  # необязательный файл с переменными CATDETECT_*
         required: false
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]

@@ -1,0 +1,16 @@
+# Вариант для компьютера с видеокартой NVIDIA:
+#   docker compose -f docker/compose.yml -f docker/compose.nvidia.yml up -d --build
+services:
+  catdetect:
+    build:
+      args:
+        TORCH_INDEX: https://download.pytorch.org/whl/cu128
+    environment:
+      CATDETECT_INFERENCE_FORMAT: torch
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
