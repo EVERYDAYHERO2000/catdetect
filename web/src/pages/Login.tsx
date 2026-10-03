@@ -1,5 +1,7 @@
 import { FormEvent, useState } from "react";
+import { mdiCat } from "@mdi/js";
 import { api } from "../api";
+import Icon from "../components/Icon";
 
 export default function Login({ setup, onDone }: { setup: boolean; onDone: () => void }) {
   const [username, setUsername] = useState(setup ? "admin" : "");
@@ -26,7 +28,10 @@ export default function Login({ setup, onDone }: { setup: boolean; onDone: () =>
   return (
     <div className="center-page">
       <form className="panel stack" onSubmit={submit}>
-        <h1>🐈 CatDetect</h1>
+        <div className="login-logo">
+          <div className="mark"><Icon path={mdiCat} size={32} /></div>
+          <h1>Cat<span className="gradient-text">Detect</span></h1>
+        </div>
         {setup && <div className="notice">Первый запуск: создайте учётную запись администратора.</div>}
         <label className="field">
           Логин
@@ -44,7 +49,7 @@ export default function Login({ setup, onDone }: { setup: boolean; onDone: () =>
           </label>
         )}
         {error && <div className="error">{error}</div>}
-        <button className="primary" disabled={busy}>{setup ? "Создать" : "Войти"}</button>
+        <button className="primary" disabled={busy} style={{ justifyContent: "center" }}>{setup ? "Создать" : "Войти"}</button>
       </form>
     </div>
   );

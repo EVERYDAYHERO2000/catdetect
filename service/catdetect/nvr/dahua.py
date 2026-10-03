@@ -108,11 +108,32 @@ def get_device_info(nvr: NvrSpec, timeout: float = 5.0) -> dict[str, Any]:
                         channels[int(k[len("table.ChannelTitle["):k.index("]")]) + 1] = v
         except (httpx.HTTPError, ValueError):
             pass
+        if not channels:
+            # названий нет — берём число аналоговых входов
+            try:
+                r = c.get("/cgi-bin/devVideoInput.cgi", params={"action": "getCollect"})
+                if r.status_code == 200:
+                    count = int(parse_kv(r.text).get("result", "0"))
+                    channels = {ch: "" for ch in range(1, count + 1)}
+            except (httpx.HTTPError, ValueError):
+                pass
     return {
         "device_type": info.get("deviceType") or info.get("updateSerial") or "",
         "serial": info.get("serialNumber", ""),
         "channels": [{"channel": ch, "name": name} for ch, name in sorted(channels.items())],
     }
+
+
+def get_snapshot(nvr: NvrSpec, channel: int, timeout: float = 8.0) -> bytes | None:
+    """JPEG-снимок канала через CGI (быстрее, чем открывать RTSP). None — если регистратор не поддерживает."""
+    try:
+        with nvr.client(timeout=timeout) as c:
+            r = c.get("/cgi-bin/snapshot.cgi", params={"channel": channel})
+    except httpx.HTTPError:
+        return None
+    if r.status_code == 200 and r.content[:2] == b"\xff\xd8":
+        return r.content
+    return None
 
 
 class DahuaEventListener(threading.Thread):

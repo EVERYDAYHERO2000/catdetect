@@ -11,6 +11,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, select
 
 from .annotate import read_image, write_jpeg
+from .labels import ASSIGNED
 from .models import SPECIES, Annotation, Identity, Image
 from .vision.detector import crop
 
@@ -50,6 +51,8 @@ def export_detect(engine: Engine, data_dir: Path, out: Path, min_images: int = 1
         shutil.copyfile(src, out / "images" / split / f"{img.id}.jpg")
         lines = []
         for a in anns.get(img.id, []):
+            if a.species not in cls_index or a.state != ASSIGNED:  # «Не объект» — просто фон
+                continue
             cx, cy = (a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2
             lines.append(f"{cls_index[a.species]} {cx:.6f} {cy:.6f} {a.x2 - a.x1:.6f} {a.y2 - a.y1:.6f}")
         (out / "labels" / split / f"{img.id}.txt").write_text("\n".join(lines))
@@ -68,7 +71,8 @@ def export_classify(engine: Engine, data_dir: Path, out: Path, min_per_class: in
     with Session(engine) as s:
         idents = {i.id: i for i in s.exec(select(Identity)).all()}
         rows = s.exec(select(Annotation, Image).join(Image, Image.id == Annotation.image_id)
-                      .where(col(Annotation.identity_id).is_not(None)).order_by(Annotation.id)).all()
+                      .where(col(Annotation.identity_id).is_not(None), Annotation.state == ASSIGNED)
+                      .order_by(Annotation.id)).all()
     by_cls: dict[int, list[tuple[Annotation, Image]]] = defaultdict(list)
     for a, img in rows:
         if a.identity_id in idents:

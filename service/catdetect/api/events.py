@@ -4,7 +4,9 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, Response, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
 from sqlmodel import Session, col, select
 
 from ..auth import authenticate
@@ -18,8 +20,15 @@ router = APIRouter(tags=["events"])
 
 @router.get("/api/events")
 def list_events(_: Auth, db: Db, camera_id: int | None = None, identity_id: int | None = None,
+                species: str | None = None, kind: str | None = None,
                 before_id: int | None = None, limit: int = 50):
     q = select(Event)
+    if species is not None:
+        q = q.where(Event.species == species)
+    if kind == "detections":  # всё, кроме журнала движения
+        q = q.where(Event.kind != "motion")
+    elif kind is not None:
+        q = q.where(Event.kind == kind)
     if camera_id is not None:
         q = q.where(Event.camera_id == camera_id)
     if identity_id is not None:
@@ -38,7 +47,17 @@ def event_image(event_id: int, _: Auth, db: Db, cfg: Cfg):
     path = cfg.data_dir / ev.snapshot_path
     if not path.exists():
         raise not_found("Снимок")
-    return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
+    # no-cache + ETag: id событий могут переиспользоваться после удаления — браузер всегда сверяет версию
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+
+
+@router.post("/api/events/{event_id}/label")
+async def label_event(event_id: int, _: Auth, rt: Rt):
+    """Отправить исходный кадр события в разметку (с рамками модели как подсказкой)."""
+    image_id = await run_in_threadpool(rt.recorder.event_to_image, event_id)
+    if image_id is None:
+        raise not_found("Исходный кадр события")
+    return {"image_id": image_id}
 
 
 @router.get("/api/state")

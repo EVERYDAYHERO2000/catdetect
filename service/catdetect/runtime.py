@@ -10,8 +10,9 @@ import numpy as np
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, select
 
+from . import compute
 from .events import EventBus
-from .models import Camera, Event, Identity, MlModel, Nvr
+from .models import SPECIES, AppSetting, Camera, Event, Identity, MlModel, Nvr
 from .nvr.dahua import DahuaEvent, DahuaEventListener, NvrSpec
 from .pipeline import CameraSpec, CameraWorker
 from .recorder import Recorder
@@ -47,6 +48,7 @@ def camera_spec(cam: Camera, nvr: Nvr | None) -> CameraSpec | None:
         zone=tuple(tuple(p) for p in cam.zone) if cam.zone and len(cam.zone) >= 3 else None,
         direction=cam.direction or None, min_conf=cam.min_conf, confirm_hits=cam.confirm_hits,
         confirm_conf=cam.confirm_conf, identity_conf=cam.identity_conf, save_frames=cam.save_frames,
+        aspect=cam.aspect,
     )
 
 
@@ -60,7 +62,10 @@ class Runtime:
         self.detector = None
         self.identifier = None
         self.detector_info: dict = {"status": "not_loaded"}
+        self.compute: compute.Compute | None = None
+        self._models_lock = threading.Lock()
         self.identity_names: dict[int, str] = {}
+        self.identity_species: dict[int, str] = {}
         self._workers: dict[int, CameraWorker] = {}
         self._by_channel: dict[tuple[int, int], CameraWorker] = {}
         self._listeners: dict[int, DahuaEventListener] = {}
@@ -95,7 +100,20 @@ class Runtime:
         p = Path(path)
         return p if p.is_absolute() else self.settings.data_dir / p
 
+    def compute_preference(self) -> str:
+        with Session(self.engine) as s:
+            row = s.get(AppSetting, "compute")
+        pref = row.value if row else self.settings.compute
+        return pref if pref in compute.PREFERENCES else "auto"
+
+    def resolve_compute(self) -> compute.Compute:
+        return compute.resolve(self.compute_preference(), self.settings.inference_format)
+
     def reload_models(self) -> None:
+        with self._models_lock:  # переключения подряд не должны грузить модели параллельно
+            self._reload_models()
+
+    def _reload_models(self) -> None:
         from .vision.detector import Detector, Identifier
 
         with Session(self.engine) as s:
@@ -103,23 +121,23 @@ class Runtime:
             cls_row = s.exec(select(MlModel).where(MlModel.kind == "classifier", MlModel.active == True)).first()  # noqa: E712
         weights = self._resolve(det_row.path) if det_row else self.settings.models_dir / "base" / self.settings.base_detector
         weights.parent.mkdir(parents=True, exist_ok=True)
-        self.detector_info = {"status": "loading", "weights": weights.name}
+        comp = self.resolve_compute()
+        self.detector_info = {"status": "loading", "weights": weights.name, "compute": comp.as_dict()}
         try:
-            det = Detector(weights, device=self.settings.device, fmt=self.settings.inference_format)
+            det = Detector(weights, device=comp.device, fmt=comp.fmt)
             det.warmup()
             self.detector = det
-            self.detector_info = {"status": "ready", "weights": weights.name,
-                                  "format": self.settings.inference_format, "model_id": det_row.id if det_row else None,
-                                  "classes": [n for n in det.names.values() if n in ("cat", "dog")]}
+            self.compute = comp
+            self.detector_info = {"status": "ready", "weights": weights.name, "compute": comp.as_dict(), "model_id": det_row.id if det_row else None,
+                                  "classes": [n for n in det.names.values() if n in SPECIES]}
         except Exception as e:  # noqa: BLE001
             log.exception("Не удалось загрузить детектор")
-            self.detector_info = {"status": "error", "error": str(e)}
+            self.detector_info = {"status": "error", "error": str(e), "compute": comp.as_dict()}
             return
         if cls_row:
             try:
                 class_map = {k: int(v) for k, v in cls_row.classes.items() if v is not None}
-                self.identifier = Identifier(self._resolve(cls_row.path), class_map, self.settings.device,
-                                             fmt=self.settings.inference_format)
+                self.identifier = Identifier(self._resolve(cls_row.path), class_map, comp.device, fmt=comp.fmt)
                 self.detector_info["classifier_id"] = cls_row.id
             except Exception:  # noqa: BLE001
                 log.exception("Не удалось загрузить классификатор")
@@ -144,6 +162,7 @@ class Runtime:
                 idents = s.exec(select(Identity)).all()
                 last_dir = self._last_directions(s)
             self.identity_names = {i.id: i.name for i in idents}
+            self.identity_species = {i.id: i.species for i in idents}
             self.state.configure([(c.id, list(c.species or [])) for c in cams], [i.id for i in idents], last_dir)
             if not self.settings.run_pipeline:
                 return

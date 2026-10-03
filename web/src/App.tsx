@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import {
+  mdiBellOutline, mdiCat, mdiCctv, mdiChevronDoubleLeft, mdiChevronDoubleRight, mdiCogOutline, mdiFolderMultipleImage,
+  mdiLogout, mdiServerNetwork, mdiViewDashboardOutline,
+} from "@mdi/js";
 import { api } from "./api";
+import Icon from "./components/Icon";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Nvrs from "./pages/Nvrs";
 import Cameras from "./pages/Cameras";
 import CameraEdit from "./pages/CameraEdit";
-import Identities from "./pages/Identities";
-import Labeling from "./pages/Labeling";
-import Training from "./pages/Training";
+import Objects from "./pages/Objects";
+import FrameEditor from "./pages/FrameEditor";
 import Events from "./pages/Events";
 import Settings from "./pages/Settings";
 
@@ -19,18 +23,18 @@ interface AuthStatus {
 }
 
 const NAV = [
-  ["/", "Обзор"],
-  ["/nvrs", "Регистраторы"],
-  ["/cameras", "Камеры"],
-  ["/identities", "Объекты"],
-  ["/labeling", "Разметка"],
-  ["/training", "Обучение"],
-  ["/events", "События"],
-  ["/settings", "Настройки"],
+  ["/", "Обзор", mdiViewDashboardOutline],
+  ["/objects", "Объекты", mdiFolderMultipleImage],
+  ["/events", "События", mdiBellOutline],
+  ["/cameras", "Камеры", mdiCctv],
+  ["/nvrs", "Регистраторы", mdiServerNetwork],
+  ["/settings", "Настройки", mdiCogOutline],
 ] as const;
 
 export default function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
+  const [open, setOpen] = useState(() => localStorage.getItem("cd.sidebar") === "open");
+  const toggle = () => setOpen((o) => (localStorage.setItem("cd.sidebar", o ? "closed" : "open"), !o));
 
   const refresh = useCallback(() => {
     api<AuthStatus>("/api/auth/status").then(setAuth).catch(() => setAuth(null));
@@ -53,17 +57,27 @@ export default function App() {
 
   return (
     <div className="layout">
-      <nav className="sidebar">
-        <div className="brand">🐈 CatDetect</div>
-        {NAV.map(([to, label]) => (
-          <NavLink key={to} to={to} end={to === "/"}>
-            {label}
+      <nav className={`sidebar ${open ? "open" : ""}`}>
+        <div className="brand">
+          <Icon path={mdiCat} size={24} />
+          <span className="label">Cat<span className="gradient-text">Detect</span></span>
+        </div>
+        <button className="side-btn toggle" onClick={toggle} title={open ? "Свернуть" : "Развернуть"}>
+          <Icon path={open ? mdiChevronDoubleLeft : mdiChevronDoubleRight} />
+          <span className="label">Свернуть</span>
+        </button>
+        {NAV.map(([to, label, icon]) => (
+          <NavLink key={to} to={to} end={to === "/"} title={label}>
+            <Icon path={icon} />
+            <span className="label">{label}</span>
           </NavLink>
         ))}
         <div className="spacer" />
-        <div className="status">
-          {auth.username} · <a href="#" onClick={(e) => (e.preventDefault(), logout())}>выйти</a>
-        </div>
+        <div className="user label">{auth.username}</div>
+        <button className="side-btn" onClick={logout} title="Выйти">
+          <Icon path={mdiLogout} />
+          <span className="label">Выйти</span>
+        </button>
       </nav>
       <main className="main">
         <Routes>
@@ -71,10 +85,12 @@ export default function App() {
           <Route path="/nvrs" element={<Nvrs />} />
           <Route path="/cameras" element={<Cameras />} />
           <Route path="/cameras/:id" element={<CameraEdit />} />
-          <Route path="/identities" element={<Identities />} />
-          <Route path="/labeling" element={<Labeling />} />
-          <Route path="/labeling/:id" element={<Labeling />} />
-          <Route path="/training" element={<Training />} />
+          <Route path="/objects" element={<Objects />} />
+          <Route path="/objects/frame/:id" element={<FrameEditor />} />
+          {/* старые адреса */}
+          <Route path="/identities" element={<Navigate to="/objects" />} />
+          <Route path="/labeling/*" element={<Navigate to="/objects" />} />
+          <Route path="/training" element={<Navigate to="/settings?tab=models" />} />
           <Route path="/events" element={<Events />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" />} />

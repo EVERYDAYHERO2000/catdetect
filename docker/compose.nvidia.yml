@@ -6,7 +6,7 @@ services:
       args:
         TORCH_INDEX: https://download.pytorch.org/whl/cu128
     environment:
-      CATDETECT_INFERENCE_FORMAT: torch
+      CATDETECT_COMPUTE: gpu
     deploy:
       resources:
         reservations:

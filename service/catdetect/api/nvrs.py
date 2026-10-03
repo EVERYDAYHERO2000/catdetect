@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import time
+
 import httpx
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
 from ..models import Camera, Nvr
-from ..nvr.dahua import get_device_info
+from ..annotate import to_jpeg
+from ..nvr.dahua import get_device_info, get_snapshot
+from ..nvr.reader import grab_frame
 from ..runtime import nvr_spec
 from .deps import Auth, Db, Rt, not_found, reload_config_async
 
@@ -87,6 +91,37 @@ async def _probe(n: Nvr) -> dict:
         return {"ok": False, "error": msg}
     except httpx.HTTPError as e:
         return {"ok": False, "error": f"Нет связи: {e}"}
+
+
+_snap_cache: dict[tuple[int, int, int], tuple[float, bytes]] = {}
+SNAP_TTL = 20.0
+
+
+def _channel_snapshot(n: Nvr, channel: int) -> bytes | None:
+    spec = nvr_spec(n)
+    data = get_snapshot(spec, channel)
+    if data is None:  # запасной путь — кадр из дополнительного RTSP-потока
+        frame = grab_frame(spec.rtsp_url(channel, "sub"), timeout=8)
+        data = to_jpeg(frame) if frame is not None else None
+    return data
+
+
+@router.get("/{nvr_id}/channels/{channel}/snapshot")
+async def channel_snapshot(nvr_id: int, channel: int, _: Auth, db: Db):
+    """Превью канала для выбора камеры (кешируется на 20 с)."""
+    n = db.get(Nvr, nvr_id)
+    if n is None:
+        raise not_found("Регистратор")
+    key = (nvr_id, channel, hash((n.host, n.http_port, n.username, n.password)))
+    cached = _snap_cache.get(key)
+    if cached and time.monotonic() - cached[0] < SNAP_TTL:
+        data = cached[1]
+    else:
+        data = await run_in_threadpool(_channel_snapshot, n, channel)
+        if data is None:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Нет изображения с канала")
+        _snap_cache[key] = (time.monotonic(), data)
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 @router.post("/test")

@@ -1,102 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { AnnotationItem, Box, Camera, Identity, ImageItem, Point, Prediction, SPECIES_LABEL, Species, api, fmtTime } from "../api";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { ALL_SPECIES, AnnotationItem, imageFile, Box, Camera, Identity, ImageItem, Point, Prediction, SPECIES_LABEL, Species, api, fmtTime } from "../api";
+import { mdiArrowLeft, mdiAutoFix, mdiContentSaveOutline, mdiDeleteOutline, mdiImageOffOutline } from "@mdi/js";
+import Icon from "../components/Icon";
 import ImageCanvas from "../components/ImageCanvas";
+import { useToast } from "../components/Toast";
 import { useApi } from "../hooks";
 
-const STATUS_LABEL = { unlabeled: "Неразмеченные", labeled: "Размеченные", skipped: "Пропущенные" } as const;
-type Status = keyof typeof STATUS_LABEL;
 
-export default function Labeling() {
+/** Кадр целиком: поправить рамки, обвести пропущенное, отметить «никого нет». */
+export default function FrameEditor() {
   const { id } = useParams();
-  return id ? <Editor key={id} imageId={+id} /> : <Queue />;
-}
-
-// ---------------- очередь ----------------
-
-function Queue() {
-  const [qs, setQs] = useSearchParams();
-  const status = (qs.get("status") ?? "unlabeled") as Status;
-  const camera = qs.get("camera") ?? "";
-  const [page, setPage] = useState(0);
-  const limit = 60;
-  const { data, reload } = useApi<{ total: number; items: ImageItem[] }>(
-    `/api/images?status=${status}&limit=${limit}&offset=${page * limit}${camera ? `&camera_id=${camera}` : ""}`,
-  );
-  const { data: stats, reload: reloadStats } = useApi<{ by_status: Record<string, number> }>("/api/images/stats");
-  const { data: cams } = useApi<Camera[]>("/api/cameras");
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
-
-  const upload = async (files: FileList | null) => {
-    if (!files?.length) return;
-    setUploading(true);
-    const form = new FormData();
-    Array.from(files).forEach((f) => form.append("files", f));
-    try {
-      await api("/api/images/upload", { form });
-      reload();
-      reloadStats();
-    } catch (e) {
-      alert((e as Error).message);
-    } finally {
-      setUploading(false);
-      if (fileRef.current) fileRef.current.value = "";
-    }
-  };
-
-  const camName = (cid: number | null) => cams?.find((c) => c.id === cid)?.name ?? "загружено";
-  const setParam = (k: string, v: string) => {
-    const n = new URLSearchParams(qs);
-    if (v) n.set(k, v);
-    else n.delete(k);
-    setQs(n);
-    setPage(0);
-  };
-
-  return (
-    <div>
-      <div className="row between mb">
-        <h1 style={{ margin: 0 }}>Разметка</h1>
-        <div className="row">
-          <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => upload(e.target.files)} />
-          <button onClick={() => fileRef.current?.click()} disabled={uploading}>{uploading ? "Загрузка…" : "Загрузить фото"}</button>
-          {data?.items[0] && <Link to={`/labeling/${data.items[0].id}`}><button className="primary">Начать разметку →</button></Link>}
-        </div>
-      </div>
-      <div className="notice small mb">
-        Кадры с животными сохраняются сюда автоматически. Проверьте или поправьте рамки, укажите вид и конкретное животное.
-        Кадры без животных (ложные срабатывания) отмечайте «Нет животных»: это тоже полезно для обучения.
-      </div>
-      <div className="row mb">
-        {(Object.keys(STATUS_LABEL) as Status[]).map((s) => (
-          <button key={s} className={s === status ? "active" : ""} onClick={() => setParam("status", s)}>
-            {STATUS_LABEL[s]} ({stats?.by_status[s] ?? 0})
-          </button>
-        ))}
-        <select style={{ width: 200 }} value={camera} onChange={(e) => setParam("camera", e.target.value)}>
-          <option value="">Все камеры</option>
-          {cams?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-      </div>
-      {data?.items.length === 0 && <div className="muted">Здесь пусто.</div>}
-      <div className="thumbs">
-        {data?.items.map((img) => (
-          <Link to={`/labeling/${img.id}`} key={img.id} className="item">
-            <img className="thumb" src={`/api/images/${img.id}/file`} loading="lazy" alt="" />
-            <span className="cap badge small">{camName(img.camera_id)} · {fmtTime(img.captured_at)}</span>
-          </Link>
-        ))}
-      </div>
-      {data && data.total > limit && (
-        <div className="row" style={{ marginTop: 16 }}>
-          <button disabled={page === 0} onClick={() => setPage(page - 1)}>←</button>
-          <span className="small muted">{page * limit + 1}–{Math.min((page + 1) * limit, data.total)} из {data.total}</span>
-          <button disabled={(page + 1) * limit >= data.total} onClick={() => setPage(page + 1)}>→</button>
-        </div>
-      )}
-    </div>
-  );
+  return <Editor key={id} imageId={+id!} />;
 }
 
 // ---------------- редактор ----------------
@@ -106,7 +21,7 @@ type Drag =
   | { kind: "move"; idx: number; start: Point; orig: Box }
   | { kind: "corner"; idx: number; corner: number };
 
-const COLOR: Record<Species, string> = { cat: "#f0a020", dog: "#3a8ee6" };
+const COLOR: Record<Species, string> = { cat: "#f0a020", dog: "#3a8ee6", person: "#78dc3c" };
 
 function normBox(b: Box): Box {
   return [Math.min(b[0], b[2]), Math.min(b[1], b[3]), Math.max(b[0], b[2]), Math.max(b[1], b[3])];
@@ -145,33 +60,32 @@ function Editor({ imageId }: { imageId: number }) {
       .catch((e) => setError(e.message));
   }, [imageId]);
 
+  const toast = useToast();
   const goNext = useCallback(() => {
-    if (img?.next_id) navigate(`/labeling/${img.next_id}`);
-    else navigate(`/labeling?status=${img?.status ?? "unlabeled"}`);
-  }, [img, navigate]);
+    if (window.history.length > 1) navigate(-1);
+    else navigate("/objects");
+  }, [navigate]);
 
   const save = useCallback(async (list: AnnotationItem[]) => {
     setBusy(true);
     try {
       await api(`/api/images/${imageId}/annotations`, { method: "PUT", body: { annotations: list } });
+      toast.success(list.length ? `Кадр сохранён: объектов ${list.length}` : "Отмечено: на кадре никого нет");
       goNext();
     } catch (e) {
       setError((e as Error).message);
+      toast.error((e as Error).message);
     } finally {
       setBusy(false);
     }
-  }, [imageId, goNext]);
-
-  const skip = useCallback(async () => {
-    await api(`/api/images/${imageId}/status?value=skipped`, { method: "POST" });
-    goNext();
-  }, [imageId, goNext]);
+  }, [imageId, goNext, toast]);
 
   const predict = async () => {
     try {
       const r = await api<{ predictions: Prediction[] }>(`/api/images/${imageId}/predict`, { method: "POST" });
       setBoxes(fromPredictions(r.predictions));
       setFromModel(true);
+      toast.info(r.predictions.length ? `Модель нашла: ${r.predictions.length}` : "Модель никого не нашла");
     } catch (e) {
       setError((e as Error).message);
     }
@@ -180,6 +94,7 @@ function Editor({ imageId }: { imageId: number }) {
   const removeImage = async () => {
     if (!confirm("Удалить кадр совсем?")) return;
     await api(`/api/images/${imageId}`, { method: "DELETE" });
+    toast.success("Кадр удалён");
     goNext();
   };
 
@@ -201,13 +116,11 @@ function Editor({ imageId }: { imageId: number }) {
       if ((e.target as HTMLElement).tagName.match(/INPUT|SELECT|TEXTAREA/)) return;
       if (e.key === "Enter") { e.preventDefault(); save(boxes); }
       else if (e.key === "n" || e.key === "т") save([]);
-      else if (e.key === "s" || e.key === "ы") skip();
-      else if (e.key === "ArrowRight" && img?.next_id) navigate(`/labeling/${img.next_id}`);
-      else if (e.key === "ArrowLeft" && img?.prev_id) navigate(`/labeling/${img.prev_id}`);
       else if (sel !== null) {
         if (e.key === "Delete" || e.key === "Backspace") del(sel);
         else if (e.key === "c" || e.key === "с") update(sel, { species: "cat" });
         else if (e.key === "d" || e.key === "в") update(sel, { species: "dog" });
+        else if (e.key === "p" || e.key === "з") update(sel, { species: "person" });
         else if (e.key === "0") update(sel, { identity_id: null });
         else if (/^[1-9]$/.test(e.key) && identities?.[+e.key - 1]) {
           const ident = identities[+e.key - 1];
@@ -289,18 +202,16 @@ function Editor({ imageId }: { imageId: number }) {
     <div>
       <div className="row between mb">
         <h1 style={{ margin: 0 }}>
-          <Link to={`/labeling?status=${img.status}`}>Разметка</Link> / кадр #{img.id}{" "}
-          <span className="badge small">{STATUS_LABEL[img.status]}</span>
+          <Link to="/objects">Объекты</Link> / кадр #{img.id}
         </h1>
         <div className="row">
-          <button disabled={!img.prev_id} onClick={() => navigate(`/labeling/${img.prev_id}`)}>← Новее</button>
-          <button disabled={!img.next_id} onClick={() => navigate(`/labeling/${img.next_id}`)}>Старее →</button>
+          <button onClick={goNext}><Icon path={mdiArrowLeft} size={18} />Назад</button>
         </div>
       </div>
       {error && <div className="error mb">{error}</div>}
       <div className="label-layout">
         <div className="panel">
-          <ImageCanvas src={`/api/images/${img.id}/file`} cursor="crosshair" onDown={onDown} onMove={onMove} onUp={onUp}>
+          <ImageCanvas src={imageFile(img)} cursor="crosshair" onDown={onDown} onMove={onMove} onUp={onUp}>
             {(g) => (
               <>
                 {boxes.map((b, i) => {
@@ -334,8 +245,8 @@ function Editor({ imageId }: { imageId: number }) {
 
         <div className="stack">
           <div className="panel stack">
-            <h3>Животные на кадре ({boxes.length})</h3>
-            {boxes.length === 0 && <div className="small muted">Нарисуйте рамку мышью вокруг животного.</div>}
+            <h3>Объекты на кадре ({boxes.length})</h3>
+            {boxes.length === 0 && <div className="small muted">Нарисуйте рамку мышью вокруг животного или человека.</div>}
             {boxes.map((b, i) => (
               <div key={i} className="stack" style={{ gap: 6, padding: 8, borderRadius: 6, border: `1px solid ${i === sel ? "var(--accent)" : "var(--border)"}` }}
                 onClick={() => setSel(i)}>
@@ -344,7 +255,7 @@ function Editor({ imageId }: { imageId: number }) {
                   <button className="small danger" onClick={(e) => (e.stopPropagation(), del(i))}>удалить</button>
                 </div>
                 <div className="row">
-                  {(["cat", "dog"] as Species[]).map((s) => (
+                  {ALL_SPECIES.map((s) => (
                     <button key={s} className={`small ${b.species === s ? "active" : ""}`} onClick={() => update(i, { species: s })}>{SPECIES_LABEL[s]}</button>
                   ))}
                 </div>
@@ -353,7 +264,7 @@ function Editor({ imageId }: { imageId: number }) {
                   const ident = identities?.find((x) => x.id === iid);
                   update(i, { identity_id: iid, ...(ident ? { species: ident.species } : {}) });
                 }}>
-                  <option value="">— не знаю, кто это —</option>
+                  <option value="">— в «Неразобранные» —</option>
                   {identities?.map((ident, k) => (
                     <option key={ident.id} value={ident.id}>{k < 9 ? `${k + 1}: ` : ""}{ident.name}</option>
                   ))}
@@ -363,18 +274,17 @@ function Editor({ imageId }: { imageId: number }) {
           </div>
 
           <div className="panel stack">
-            <button className="primary" onClick={() => save(boxes)} disabled={busy}>Сохранить и дальше <span className="kbd">Enter</span></button>
-            <button onClick={() => save([])} disabled={busy}>Нет животных <span className="kbd">N</span></button>
-            <button onClick={skip} disabled={busy}>Пропустить <span className="kbd">S</span></button>
-            <button onClick={predict}>Предразметка моделью</button>
-            <button className="danger" onClick={removeImage}>Удалить кадр</button>
+            <button className="primary" onClick={() => save(boxes)} disabled={busy}><Icon path={mdiContentSaveOutline} size={18} />Сохранить <span className="kbd">Enter</span></button>
+            <button onClick={() => save([])} disabled={busy}><Icon path={mdiImageOffOutline} size={18} />Нет объектов <span className="kbd">N</span></button>
+            <button onClick={predict}><Icon path={mdiAutoFix} size={18} />Предразметка моделью</button>
+            <button className="danger" onClick={removeImage}><Icon path={mdiDeleteOutline} size={18} />Удалить кадр</button>
           </div>
 
           <div className="panel small muted stack" style={{ gap: 4 }}>
             <div><b>Мышь:</b> тяните по пустому месту, чтобы нарисовать рамку; клик выбирает рамку, углы меняют её размер.</div>
             <div><span className="kbd">1</span>…<span className="kbd">9</span> — объект, <span className="kbd">0</span> — неизвестный</div>
-            <div><span className="kbd">C</span> кошка, <span className="kbd">D</span> собака, <span className="kbd">Del</span> удалить</div>
-            <div><span className="kbd">←</span> <span className="kbd">→</span> соседние кадры</div>
+            <div><span className="kbd">C</span> кошка, <span className="kbd">D</span> собака, <span className="kbd">P</span> человек, <span className="kbd">Del</span> удалить</div>
+            <div>Рамка без выбранной папки попадёт в «Неразобранные».</div>
           </div>
         </div>
       </div>

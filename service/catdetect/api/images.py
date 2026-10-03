@@ -6,13 +6,15 @@ from typing import Literal
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlmodel import col, func, select
 
 from ..annotate import read_image
-from ..models import Annotation, Identity, Image
+from ..labels import ASSIGNED, PENDING, REJECTED, move, refresh_image_status
+from ..models import SPECIES, Annotation, Event, Identity, Image, utcnow
 from ..vision.detector import crop
 from .deps import Auth, Cfg, Db, Rt, not_found
 
@@ -21,7 +23,7 @@ router = APIRouter(prefix="/api/images", tags=["images"])
 
 class AnnotationIn(BaseModel):
     box: list[float] = Field(min_length=4, max_length=4)
-    species: Literal["cat", "dog"]
+    species: Literal["cat", "dog", "person"]
     identity_id: int | None = None
 
 
@@ -53,9 +55,12 @@ def list_images(_: Auth, db: Db, status_: str | None = Query(None, alias="status
 @router.get("/stats")
 def stats(_: Auth, db: Db):
     by_status = dict(db.exec(select(Image.status, func.count()).group_by(Image.status)).all())
-    by_species = dict(db.exec(select(Annotation.species, func.count()).group_by(Annotation.species)).all())
+    # для обучения считаются только разложенные по папкам снимки
+    by_species = dict(db.exec(select(Annotation.species, func.count()).where(Annotation.state == ASSIGNED)
+                              .group_by(Annotation.species)).all())
     by_identity = dict(db.exec(select(Annotation.identity_id, func.count())
-                               .where(col(Annotation.identity_id).is_not(None)).group_by(Annotation.identity_id)).all())
+                               .where(col(Annotation.identity_id).is_not(None), Annotation.state == ASSIGNED)
+                               .group_by(Annotation.identity_id)).all())
     return {"by_status": by_status, "by_species": by_species, "by_identity": by_identity}
 
 
@@ -64,7 +69,7 @@ def get_image(image_id: int, _: Auth, db: Db):
     img = db.get(Image, image_id)
     if img is None:
         raise not_found("Кадр")
-    anns = db.exec(select(Annotation).where(Annotation.image_id == image_id)).all()
+    anns = db.exec(select(Annotation).where(Annotation.image_id == image_id, Annotation.state != REJECTED)).all()
     # соседи для навигации в очереди разметки (по тому же статусу)
     newer = db.exec(select(Image.id).where(Image.id > image_id, Image.status == img.status)
                     .order_by(Image.id).limit(1)).first()
@@ -81,30 +86,60 @@ def image_file(image_id: int, _: Auth, db: Db, cfg: Cfg):
     path = cfg.data_dir / img.path
     if not path.exists():
         raise not_found("Файл")
-    return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+
+
+def _detect_all(rt, frame) -> list[dict]:
+    if rt.detector is None:
+        return []
+    out = []
+    for d in rt.detector.detect(frame, SPECIES, 0.25):
+        item = {"box": list(d.box), "species": d.species, "conf": round(d.conf, 3), "identity_id": None}
+        if rt.identifier is not None:
+            ident, _p = rt.identifier.identify(crop(frame, d.box))
+            if ident is not None and rt.identity_species.get(ident) == d.species:
+                item["identity_id"] = ident
+        out.append(item)
+    return out
 
 
 @router.post("/upload")
-async def upload(_: Auth, rt: Rt, files: list[UploadFile] = File(...), camera_id: int | None = None):
-    ids = []
+async def upload(_: Auth, rt: Rt, db: Db, files: list[UploadFile] = File(...), camera_id: int | None = None,
+                 identity_id: int | None = None):
+    """Свои фото: модель находит объекты → «Неразобранные». С identity_id самый крупный объект подходящего вида
+    сразу кладётся в эту папку."""
+    ident = db.get(Identity, identity_id) if identity_id else None
+    ids, found, assigned = [], 0, 0
     for f in files:
         data = np.frombuffer(await f.read(), dtype=np.uint8)
         frame = cv2.imdecode(data, cv2.IMREAD_COLOR)
         if frame is None:
             continue
-        ids.append(await run_in_threadpool(rt.recorder.save_frame, camera_id, frame, [], "upload"))
+        preds = await run_in_threadpool(_detect_all, rt, frame)
+        image_id = await run_in_threadpool(rt.recorder.save_frame, camera_id, frame, preds, "upload")
+        ids.append(image_id)
+        found += len(preds)
+        if ident is not None:
+            cands = db.exec(select(Annotation).where(Annotation.image_id == image_id,
+                                                     Annotation.species == ident.species)).all()
+            if cands:
+                best = max(cands, key=lambda a: (a.x2 - a.x1) * (a.y2 - a.y1))
+                move(db, [best.id], ident.id)
+                db.commit()
+                assigned += 1
     if not ids:
         raise HTTPException(422, "Нет изображений в поддерживаемом формате")
-    return {"ids": ids}
+    return {"ids": ids, "found": found, "assigned": assigned}
 
 
 @router.put("/{image_id}/annotations")
 def save_annotations(image_id: int, body: AnnotationsIn, _: Auth, db: Db):
-    """Заменяет разметку кадра. Пустой список — «на кадре нет животных» (негативный пример)."""
+    """Заменяет рамки кадра (карточки «Не объект» не трогает). Рамка с объектом — сразу в его папку,
+    без объекта — в «Неразобранные». Пустой список — «на кадре никого нет» (негативный пример)."""
     img = db.get(Image, image_id)
     if img is None:
         raise not_found("Кадр")
-    for a in db.exec(select(Annotation).where(Annotation.image_id == image_id)).all():
+    for a in db.exec(select(Annotation).where(Annotation.image_id == image_id, Annotation.state != REJECTED)).all():
         db.delete(a)
     for a in body.annotations:
         x1, y1, x2, y2 = (min(max(v, 0.0), 1.0) for v in a.box)
@@ -115,9 +150,10 @@ def save_annotations(image_id: int, body: AnnotationsIn, _: Auth, db: Db):
         if a.identity_id is not None and db.get(Identity, a.identity_id) is None:
             raise HTTPException(422, "Объект не найден")
         db.add(Annotation(image_id=image_id, x1=x1, y1=y1, x2=x2, y2=y2, species=a.species,
-                          identity_id=a.identity_id))
-    img.status = "labeled"
-    db.add(img)
+                          identity_id=a.identity_id, state=ASSIGNED if a.identity_id else PENDING,
+                          assigned_at=utcnow() if a.identity_id else None))
+    db.flush()
+    refresh_image_status(db, [image_id])
     db.commit()
     return get_image(image_id, _, db)
 
@@ -140,6 +176,9 @@ def delete_image(image_id: int, _: Auth, db: Db, cfg: Cfg):
         raise not_found("Кадр")
     for a in db.exec(select(Annotation).where(Annotation.image_id == image_id)).all():
         db.delete(a)
+    for ev in db.exec(select(Event).where(Event.image_id == image_id)).all():
+        ev.image_id = None  # событие можно будет снова отправить в разметку
+        db.add(ev)
     (cfg.data_dir / img.path).unlink(missing_ok=True)
     db.delete(img)
     db.commit()
@@ -160,10 +199,12 @@ async def predict(image_id: int, _: Auth, db: Db, rt: Rt, cfg: Cfg, min_conf: fl
 
     def run():
         out = []
-        for d in rt.detector.detect(frame, ("cat", "dog"), min_conf):
+        for d in rt.detector.detect(frame, SPECIES, min_conf):
             item = {"box": list(d.box), "species": d.species, "conf": round(d.conf, 3), "identity_id": None}
             if rt.identifier is not None:
                 ident, p = rt.identifier.identify(crop(frame, d.box))
+                if ident is not None and rt.identity_species.get(ident) != d.species:
+                    ident = None
                 item["identity_id"], item["identity_conf"] = ident, round(p, 3)
             out.append(item)
         return out

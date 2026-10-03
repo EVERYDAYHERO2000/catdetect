@@ -33,11 +33,11 @@ class Settings:
     data_dir: Path = field(default_factory=lambda: Path.home() / "catdetect-data")
     web_dir: Path = field(default_factory=_default_web_dir)
     secret_key: str = ""
-    device: str | None = None  # None — ultralytics выберет сам (cuda/mps/cpu)
+    compute: str = "auto"  # auto | cpu | gpu — по умолчанию; меняется в веб-интерфейсе
     base_detector: str = "yolo26m.pt"
     base_classifier: str = "yolo26s-cls.pt"
-    # torch — как есть (GPU/CPU); openvino/onnx — экспорт для быстрого инференса на CPU
-    inference_format: str = "torch"
+    # формат модели при работе на процессоре: openvino | onnx | torch
+    inference_format: str = "openvino"
     run_pipeline: bool = True
     cookie_secure: bool = False
 
@@ -91,8 +91,8 @@ def load_settings() -> Settings:
         s.web_dir = Path(v).expanduser()
     if v := os.environ.get("CATDETECT_SECRET_KEY"):
         s.secret_key = v
-    if v := os.environ.get("CATDETECT_DEVICE"):
-        s.device = v
+    if v := os.environ.get("CATDETECT_COMPUTE"):
+        s.compute = v.lower()
     if v := os.environ.get("CATDETECT_BASE_DETECTOR"):
         s.base_detector = v
     if v := os.environ.get("CATDETECT_BASE_CLASSIFIER"):

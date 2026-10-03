@@ -104,6 +104,10 @@ class StateStore:
         if snapshot is not None:
             self.bus.publish({"type": "snapshot", "camera_id": cam_id})
 
+    def on_motion_event(self, event: dict[str, Any]) -> None:
+        """Журнал движения: только в ленту событий, состояние камеры и снимок не меняются."""
+        self.bus.publish({"type": "event", "event": event})
+
     # --- чтение ---
 
     def snapshot(self) -> dict[str, Any]:

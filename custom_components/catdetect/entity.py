@@ -49,7 +49,8 @@ class IdentityEntity(CatDetectEntity):
             identifiers={(DOMAIN, f"{entry_id}_identity_{self.identity_id}")},
             name=identity["name"],
             manufacturer="CatDetect",
-            model=("Кошка" if identity["species"] == "cat" else "Собака") + ("" if identity["is_own"] else " (чужие)"),
+            model={"cat": "Кошка", "dog": "Собака", "person": "Человек"}.get(identity["species"], identity["species"])
+            + ("" if identity["is_own"] else " (чужие)"),
             configuration_url=f"{coordinator.client.url}/identities",
         )
 

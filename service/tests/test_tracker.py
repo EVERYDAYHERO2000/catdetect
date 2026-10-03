@@ -98,3 +98,16 @@ def test_hold_state():
     assert h.update(True, 0) and h.state
     assert not h.update(False, 3) and h.state
     assert h.update(False, 6) and not h.state
+
+
+def test_apply_aspect():
+    import numpy as np
+
+    from catdetect.nvr.reader import apply_aspect, parse_aspect
+
+    frame = np.zeros((1616, 1440, 3), np.uint8)
+    assert apply_aspect(frame, None) is frame
+    assert apply_aspect(frame, "16:9").shape[:2] == (810, 1440)  # шире — уменьшаем высоту
+    assert apply_aspect(frame, "3:4").shape[:2] == (1616, 1212)  # уже — уменьшаем ширину
+    assert parse_aspect("4:3") == pytest.approx(4 / 3)
+    assert parse_aspect("bad") is None and parse_aspect("0:3") is None

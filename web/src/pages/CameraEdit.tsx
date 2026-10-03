@@ -1,6 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Camera, Nvr, Point, Prediction, SPECIES_LABEL, Species, api } from "../api";
+import {
+  mdiContentSaveOutline, mdiCursorDefault, mdiDeleteOutline, mdiDoorOpen, mdiEraser, mdiImageSearchOutline, mdiPlay,
+  mdiRefresh, mdiStop, mdiVectorLine, mdiVectorPolygon,
+} from "@mdi/js";
+import ChannelGrid, { ChannelInfo } from "../components/ChannelGrid";
+import Icon from "../components/Icon";
+import { useToast } from "../components/Toast";
 import ImageCanvas from "../components/ImageCanvas";
 import { useApi } from "../hooks";
 
@@ -11,13 +18,13 @@ type Handle = { kind: "zone"; i: number } | { kind: "line"; i: 0 | 1 } | { kind:
 const DEFAULTS: Form = {
   slug: "", name: "", nvr_id: null, channel: 1, stream: "sub", source_url: null, trigger: "motion", fps: 5, linger: 10,
   clear_after: 10, species: ["cat", "dog"], zone: null, direction: null, min_conf: 0.25, confirm_hits: 3,
-  confirm_conf: 0.5, identity_conf: 0.6, save_frames: true, enabled: true,
+  confirm_conf: 0.5, identity_conf: 0.6, save_frames: true, enabled: true, aspect: null,
 };
 
 const HINT: Record<Mode, string> = {
   none: "Перетаскивайте точки мышью. Выберите инструмент, чтобы рисовать.",
-  zone: "Кликайте, чтобы добавить вершины зоны. Животные вне зоны игнорируются.",
-  line: "Поставьте две точки линии, которую животное пересекает по пути к двери.",
+  zone: "Кликайте, чтобы добавить вершины зоны. Всё, что вне зоны, игнорируется.",
+  line: "Поставьте две точки линии, которую пересекают по пути к двери.",
   door: "Кликните на стороне линии, где находится дверь.",
 };
 
@@ -39,12 +46,16 @@ export default function CameraEdit() {
   const [snapError, setSnapError] = useState(false);
   const [dets, setDets] = useState<Prediction[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [, setSaved] = useState(false);
+  const [live, setLive] = useState(false);
+  const toast = useToast();
   const [busy, setBusy] = useState(false);
+  const channelNames = useRef(new Set<string>()); // имена, подставленные из каналов (их можно заменять)
 
   useEffect(() => {
     if (isNew) {
       const name = qs.get("name") ?? "";
+      channelNames.current.add(name);
       setF({ ...DEFAULTS, name, slug: translit(name), nvr_id: qs.get("nvr") ? +qs.get("nvr")! : null, channel: +(qs.get("channel") ?? 1) });
     } else {
       api<Camera>(`/api/cameras/${id}`).then(({ id: _omit, ...rest }) => setF(rest)).catch((e) => setError(e.message));
@@ -70,9 +81,12 @@ export default function CameraEdit() {
       const body = { ...f, direction: f.direction?.line && f.direction.door_point ? f.direction : null };
       const r = await api<Camera>(isNew ? "/api/cameras" : `/api/cameras/${id}`, { method: isNew ? "POST" : "PUT", body });
       setSaved(true);
+      toast.success(isNew ? `Камера «${r.name}» добавлена` : "Настройки камеры сохранены");
+      window.setTimeout(() => setSnapVer(Date.now()), 2500); // поток перезапускается с новыми настройками
       if (isNew) navigate(`/cameras/${r.id}`, { replace: true });
     } catch (e) {
       setError((e as Error).message);
+      toast.error("Не удалось сохранить: " + (e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -81,6 +95,7 @@ export default function CameraEdit() {
   const remove = async () => {
     if (!confirm(`Удалить камеру «${f.name}»? История событий будет удалена, кадры для обучения сохранятся.`)) return;
     await api(`/api/cameras/${id}`, { method: "DELETE" });
+    toast.success(`Камера «${f.name}» удалена`);
     navigate("/cameras");
   };
 
@@ -90,6 +105,7 @@ export default function CameraEdit() {
       const r = await api<{ detections: Prediction[] }>(`/api/cameras/${id}/detect`, { method: "POST" });
       setDets(r.detections);
       setSnapVer(Date.now());
+      toast.info(r.detections.length ? `Найдено на кадре: ${r.detections.length}` : "На кадре никого не найдено");
     } catch (e) {
       setError((e as Error).message);
     }
@@ -134,9 +150,8 @@ export default function CameraEdit() {
       <div className="row between mb">
         <h1 style={{ margin: 0 }}><Link to="/cameras">Камеры</Link> / {isNew ? "новая" : f.name}</h1>
         <div className="row">
-          {saved && <span className="badge ok">сохранено</span>}
-          {!isNew && <button className="danger" onClick={remove}>Удалить</button>}
-          <button className="primary" onClick={save} disabled={busy}>Сохранить</button>
+          {!isNew && <button className="danger" onClick={remove}><Icon path={mdiDeleteOutline} size={18} />Удалить</button>}
+          <button className="primary" onClick={save} disabled={busy}><Icon path={mdiContentSaveOutline} size={18} />Сохранить</button>
         </div>
       </div>
       {error && <div className="error mb">{error}</div>}
@@ -144,21 +159,37 @@ export default function CameraEdit() {
       <div className="label-layout" style={{ gridTemplateColumns: "minmax(0, 1fr) 360px" }}>
         <div className="panel stack">
           {isNew ? (
-            <div className="muted">Сохраните камеру, чтобы увидеть кадр и нарисовать зону и линию направления.</div>
+            f.nvr_id && f.source_url === null ? (
+              <NewCameraChannels nvrId={f.nvr_id} selected={f.channel} onSelect={(c) => {
+                setSaved(false);
+                setF((x) => {
+                  if (!x) return x;
+                  const autoName = !x.name || channelNames.current.has(x.name);
+                  const name = autoName ? c.name || `Канал ${c.channel}` : x.name;
+                  channelNames.current.add(name);
+                  return { ...x, channel: c.channel, name, slug: slugTouched ? x.slug : translit(name) };
+                });
+              }} />
+            ) : (
+              <div className="muted">Сохраните камеру, чтобы увидеть кадр и нарисовать зону и линию направления.</div>
+            )
           ) : (
             <>
               <div className="row">
                 {(["none", "zone", "line", "door"] as Mode[]).map((m) => (
                   <button key={m} className={mode === m ? "active" : ""} onClick={() => setMode(m)}>
+                    <Icon size={18} path={{ none: mdiCursorDefault, zone: mdiVectorPolygon, line: mdiVectorLine, door: mdiDoorOpen }[m]} />
                     {{ none: "Указатель", zone: "Зона", line: "Линия", door: "Точка двери" }[m]}
                   </button>
                 ))}
                 <span style={{ flex: 1 }} />
-                <button onClick={() => set("zone", null)} disabled={!f.zone}>Сбросить зону</button>
-                <button onClick={() => set("direction", null)} disabled={!f.direction}>Сбросить линию</button>
+                <button className="ghost" onClick={() => set("zone", null)} disabled={!f.zone}><Icon path={mdiEraser} size={18} />Сбросить зону</button>
+                <button className="ghost" onClick={() => set("direction", null)} disabled={!f.direction}><Icon path={mdiEraser} size={18} />Сбросить линию</button>
               </div>
               <div className="small muted">{HINT[mode]}</div>
-              {snapError ? (
+              {live ? (
+                <LiveView cameraId={+id!} />
+              ) : snapError ? (
                 <div className="error">Нет кадра с камеры. Проверьте регистратор/канал и сохраните настройки.</div>
               ) : (
                 <ImageCanvas
@@ -200,9 +231,12 @@ export default function CameraEdit() {
                 </ImageCanvas>
               )}
               <div className="row">
-                <button onClick={() => (setSnapVer(Date.now()), setSnapError(false), setDets(null))}>Обновить кадр</button>
-                <button onClick={testDetect}>Тест детекции на кадре</button>
-                {dets && <span className="small muted">{dets.length ? `найдено: ${dets.length}` : "животных не найдено"}</span>}
+                <button className={live ? "active" : ""} onClick={() => setLive(!live)}>
+                  <Icon path={live ? mdiStop : mdiPlay} size={18} />{live ? "Остановить просмотр" : "Живой просмотр детекции"}
+                </button>
+                {!live && <button onClick={() => (setSnapVer(Date.now()), setSnapError(false), setDets(null))}><Icon path={mdiRefresh} size={18} />Обновить кадр</button>}
+                {!live && <button onClick={testDetect}><Icon path={mdiImageSearchOutline} size={18} />Тест детекции на кадре</button>}
+                {dets && <span className="small muted">{dets.length ? `найдено: ${dets.length}` : "ничего не найдено"}</span>}
               </div>
             </>
           )}
@@ -238,6 +272,7 @@ export default function CameraEdit() {
               </label>
             </div>
           )}
+          <AspectField value={f.aspect} cameraId={isNew ? null : +id!} onChange={(v) => set("aspect", v)} />
           <label className="field">
             Когда анализировать
             <select value={f.trigger} onChange={(e) => set("trigger", e.target.value as Form["trigger"])} disabled={f.source_url !== null}>
@@ -247,8 +282,10 @@ export default function CameraEdit() {
           </label>
           <div className="row">
             <span className="small muted">Искать:</span>
-            {(["cat", "dog"] as Species[]).map((s) => (
-              <label key={s} className="check"><input type="checkbox" checked={f.species.includes(s)} onChange={() => toggleSpecies(s)} />{SPECIES_LABEL[s]}</label>
+            {(["cat", "dog", "person"] as Species[]).map((s) => (
+              <label key={s} className="check">
+                <input type="checkbox" checked={f.species.includes(s)} onChange={() => toggleSpecies(s)} />{SPECIES_LABEL[s]}
+              </label>
             ))}
           </div>
           <details>
@@ -260,15 +297,102 @@ export default function CameraEdit() {
               <label className="field">Мин. уверенность кадра<input type="number" step={0.05} value={f.min_conf} onChange={num("min_conf")} /></label>
               <label className="field">Кадров для подтверждения<input type="number" value={f.confirm_hits} onChange={num("confirm_hits")} /></label>
               <label className="field">Уверенность подтверждения<input type="number" step={0.05} value={f.confirm_conf} onChange={num("confirm_conf")} /></label>
-              <label className="field">Порог узнавания животного<input type="number" step={0.05} value={f.identity_conf} onChange={num("identity_conf")} /></label>
+              <label className="field">Порог узнавания объекта<input type="number" step={0.05} value={f.identity_conf} onChange={num("identity_conf")} /></label>
               {f.direction && (
                 <label className="field">Мёртвая зона у линии<input type="number" step={0.01} value={f.direction.margin} onChange={(e) => setDir({ margin: +e.target.value })} /></label>
               )}
             </div>
           </details>
-          <label className="check"><input type="checkbox" checked={f.save_frames} onChange={(e) => set("save_frames", e.target.checked)} />Сохранять кадры с животными для разметки</label>
+          <label className="check"><input type="checkbox" checked={f.save_frames} onChange={(e) => set("save_frames", e.target.checked)} />Сохранять кадры с найденными объектами для разметки</label>
           <label className="check"><input type="checkbox" checked={f.enabled} onChange={(e) => set("enabled", e.target.checked)} />Камера включена</label>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function NewCameraChannels({ nvrId, selected, onSelect }: { nvrId: number; selected: number; onSelect: (c: ChannelInfo) => void }) {
+  const [channels, setChannels] = useState<ChannelInfo[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const { data: cams } = useApi<Camera[]>("/api/cameras");
+
+  useEffect(() => {
+    setChannels(null);
+    setError(null);
+    api<{ ok: boolean; error?: string; channels?: ChannelInfo[] }>(`/api/nvrs/${nvrId}/test`, { method: "POST" })
+      .then((r) => (r.ok ? setChannels(r.channels ?? []) : setError(r.error ?? "Нет связи с регистратором")))
+      .catch((e) => setError(e.message));
+  }, [nvrId]);
+
+  if (error) return <div className="error">{error}</div>;
+  if (!channels) return <div className="muted">Загружаю каналы регистратора…</div>;
+  if (!channels.length) return <div className="muted">Регистратор не сообщил список каналов — укажите номер канала справа.</div>;
+  return (
+    <div className="stack">
+      <div className="small muted">Выберите камеру. После сохранения можно будет нарисовать зону и линию направления.</div>
+      <ChannelGrid nvrId={nvrId} channels={channels} cameras={cams ?? []} selected={selected} onSelect={onSelect} />
+    </div>
+  );
+}
+
+/** Кадры с детекциями примерно раз в секунду: видно, что находит модель и почему событие не сработало. */
+function LiveView({ cameraId }: { cameraId: number }) {
+  const [src, setSrc] = useState(`/api/cameras/${cameraId}/debug?v=${Date.now()}`);
+  const [error, setError] = useState(false);
+  const timer = useRef<number>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const next = (delay: number) => {
+    timer.current = window.setTimeout(() => setSrc(`/api/cameras/${cameraId}/debug?v=${Date.now()}`), delay);
+  };
+  return (
+    <div className="stack" style={{ gap: 6 }}>
+      {error && <div className="error">Нет кадра: камера выключена, поток недоступен или модель ещё загружается. Повторяю…</div>}
+      <img className="full-image" src={src} style={{ maxHeight: "70vh", margin: 0 }} alt=""
+        onLoad={() => (setError(false), next(700))} onError={() => (setError(true), next(3000))} />
+      <div className="small muted">
+        Цветные рамки — детекции, которые идут в трекер; <b>OK</b> — подтверждённый трек (будет событие).
+        Серые: <span className="mono">weak</span> — уверенность ниже порога кадра,{" "}
+        <span className="mono">out-of-zone</span> — центр рамки вне зоны. Внизу видно, есть ли движение и идёт ли анализ.
+      </div>
+    </div>
+  );
+}
+
+const ASPECTS = ["4:3", "16:9", "1:1", "3:4", "9:16"];
+
+/** Пропорции кадра: аналоговые камеры часто отдают картинку с неквадратными пикселями — она выглядит сплющенной. */
+function AspectField({ value, cameraId, onChange }: { value: string | null; cameraId: number | null; onChange: (v: string | null) => void }) {
+  const [native, setNative] = useState<[number, number] | null>(null);
+  const custom = value !== null && !ASPECTS.includes(value);
+  const [customMode, setCustomMode] = useState(custom);
+
+  useEffect(() => {
+    if (cameraId === null) return;
+    api<{ native: [number, number] | null }>(`/api/cameras/${cameraId}/stream_info`).then((r) => setNative(r.native)).catch(() => {});
+  }, [cameraId]);
+
+  const nativeLabel = native ? `${native[0]}×${native[1]}` : "";
+  return (
+    <div className="stack" style={{ gap: 6 }}>
+      <label className="field">
+        Пропорции кадра
+        <select value={customMode ? "custom" : value ?? ""} onChange={(e) => {
+          const v = e.target.value;
+          if (v === "custom") { setCustomMode(true); return; }
+          setCustomMode(false);
+          onChange(v || null);
+        }}>
+          <option value="">Как в потоке{nativeLabel && ` (${nativeLabel})`}</option>
+          {ASPECTS.map((a) => <option key={a} value={a}>{a}</option>)}
+          <option value="custom">Свои…</option>
+        </select>
+      </label>
+      {customMode && (
+        <input className="mono" placeholder="например 5:4" value={value ?? ""} onChange={(e) => onChange(e.target.value || null)} />
+      )}
+      <div className="small muted">
+        Если на картинке всё сплющено или вытянуто (круглое выглядит овальным), выберите пропорции, при которых кадр выглядит естественно.
+        Влияет на превью, снимки событий и распознавание; зона и линия не сдвигаются.
       </div>
     </div>
   );

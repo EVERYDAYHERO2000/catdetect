@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import cv2
 import numpy as np
 
 from .annotate import draw_overlay, to_jpeg
@@ -25,6 +26,7 @@ MAX_IDENTITY_SAMPLES = 10  # сколько кропов трека класси
 MAX_SAVED_FRAMES_PER_TRACK = 5
 SAVE_FRAME_INTERVAL = 2.0  # сек между сохранёнными кадрами одного трека
 STALE_FRAME = 5.0  # сек — кадр старше считается потерянным потоком
+DEBUG_CONF = 0.1  # в живом просмотре показываем и слабые детекции — чтобы было видно, почему не сработало
 
 _TRANSLIT = {k: v.strip("_") for k, v in zip(
     "абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
@@ -56,6 +58,7 @@ class CameraSpec:
     confirm_conf: float
     identity_conf: float
     save_frames: bool
+    aspect: str | None = None
 
 
 class CameraWorker(threading.Thread):
@@ -64,7 +67,7 @@ class CameraWorker(threading.Thread):
         self.spec = spec
         self.rt = runtime
         self.stop_event = threading.Event()
-        self.reader = StreamReader(spec.url, spec.slug, self.stop_event)
+        self.reader = StreamReader(spec.url, spec.slug, self.stop_event, spec.aspect)
         self.direction = DirectionRule.from_config(spec.direction)
         self.tracker = Tracker(
             TrackerParams(confirm_hits=spec.confirm_hits, confirm_conf=spec.confirm_conf), self.direction
@@ -76,6 +79,10 @@ class CameraWorker(threading.Thread):
         self._at_door = {sp: HoldState(spec.clear_after) for sp in spec.species}
         self._id_present: dict[int, HoldState] = {}
         self._id_at_door: dict[int, HoldState] = {}
+        # последний обработанный кадр и все сырые детекции — для живого просмотра
+        self._debug: tuple[float, np.ndarray, list[Detection]] | None = None
+        # текущий эпизод движения — по его окончании пишется событие motion с разбором
+        self._session: dict[str, Any] | None = None
 
     # --- управление ---
 
@@ -83,8 +90,11 @@ class CameraWorker(threading.Thread):
         self.stop_event.set()
 
     def on_motion(self, active: bool) -> None:
+        log.info("Камера %s: движение %s", self.spec.slug, "началось" if active else "закончилось")
         with self._lock:
             if active:
+                if self._session is None:
+                    self._session = {"start": time.time(), "frames": 0, "events": 0, "best": None}
                 self._motion = True
             else:
                 self._motion = False
@@ -108,6 +118,8 @@ class CameraWorker(threading.Thread):
             now = time.monotonic()
             self.rt.state.set_flag(self.spec.id, "online", self.reader.connected)
             if not self._active(now):
+                if self._session is not None:
+                    self._finish_session()
                 self._update_presence(now)
                 self.stop_event.wait(0.2)
                 continue
@@ -136,20 +148,111 @@ class CameraWorker(threading.Thread):
         detector = self.rt.detector
         if detector is None:
             return []
-        dets = self.filter_zone(detector.detect(frame, self.spec.species, self.spec.min_conf))
+        raw = detector.detect(frame, self.spec.species, min(DEBUG_CONF, self.spec.min_conf))
+        self._debug = (now, frame, raw)
+        self._note_session(frame, raw)
+        dets = self.filter_zone([d for d in raw if d.conf >= self.spec.min_conf])
         events = self.tracker.update(dets, now)
 
         identifier = self.rt.identifier
         if identifier is not None:
             for t in self.tracker.tracks.values():
                 if t.last_seen == now and t.identity_samples < MAX_IDENTITY_SAMPLES:
-                    t.add_identity(*identifier.identify(crop(frame, t.box)))
+                    ident, prob = identifier.identify(crop(frame, t.box))
+                    if ident is not None and self.rt.identity_species.get(ident) != t.species:
+                        ident = None  # классификатор назвал объект другого вида — не верим
+                    t.add_identity(ident, prob)
 
         for ev in events:
             self._emit(ev, frame)
         self._maybe_save_frame(frame, now)
         self._update_presence(now)
         return events
+
+    # --- журнал движения ---
+
+    def _reason(self, d: Detection) -> str:
+        if self.spec.zone and not point_in_polygon(center(d.box), self.spec.zone):
+            return "out_of_zone"
+        if d.conf < self.spec.min_conf:
+            return "weak"
+        if d.conf < self.spec.confirm_conf:
+            return "below_confirm"
+        return "ok"
+
+    def _note_session(self, frame: np.ndarray, raw: list[Detection]) -> None:
+        s = self._session
+        if s is None:
+            return
+        s["frames"] += 1
+        s.setdefault("frame", frame)
+        for d in raw:
+            if s["best"] is None or d.conf > s["best"]["conf"]:
+                s["best"] = {"species": d.species, "conf": round(d.conf, 3), "reason": self._reason(d)}
+                s["frame"], s["box"] = frame, d.box
+
+    def _finish_session(self) -> None:
+        with self._lock:
+            s, self._session = self._session, None
+        if s is None:
+            return
+        frame = s.get("frame")
+        if frame is None:
+            frame = self.reader.latest()[0]
+        best = s["best"]
+        snapshot = None
+        if frame is not None:
+            boxes = [{"box": s["box"], "species": best["species"] if best["reason"] == "ok" else "",
+                      "label": f"{best['species']} {best['conf']:.2f} {best['reason']}"}] if best else []
+            snapshot = to_jpeg(draw_overlay(frame, self.spec.zone and [list(p) for p in self.spec.zone],
+                                            self.spec.direction, boxes))
+        details = {"duration": round(time.time() - s["start"], 1), "frames": s["frames"], "events": s["events"],
+                   "best": best}
+        preds = [{"box": list(s["box"]), "species": best["species"], "conf": best["conf"], "identity_id": None}] \
+            if best else []
+        record = self.rt.recorder.save_event(self.spec.id, "motion", best["species"] if best else "", None,
+                                             best["conf"] if best else 0.0, None, 0, snapshot, details,
+                                             raw=frame, predictions=preds)
+        log.info("Камера %s: эпизод движения %.0f с, кадров %d, событий %d, лучшая детекция: %s", self.spec.slug,
+                 details["duration"], s["frames"], s["events"],
+                 f"{best['species']} {best['conf']:.2f} ({best['reason']})" if best else "нет")
+        self.rt.state.on_motion_event(record)
+
+    # --- живой просмотр ---
+
+    def debug_image(self) -> np.ndarray | None:
+        """Кадр со всеми детекциями: подтверждённые треки, слабые и отброшенные зоной рамки, статус."""
+        now = time.monotonic()
+        dbg = self._debug
+        if dbg is None or now - dbg[0] > 1.5:  # анализ сейчас не идёт — считаем на лету
+            frame, _, _ = self.reader.latest()
+            detector = self.rt.detector
+            if frame is None or detector is None:
+                return None
+            dbg = (now, frame, detector.detect(frame, self.spec.species, DEBUG_CONF))
+            analysing = False
+        else:
+            analysing = True
+        _, frame, raw = dbg
+        boxes = []
+        for d in raw:
+            in_zone = not self.spec.zone or point_in_polygon(center(d.box), self.spec.zone)
+            ok = in_zone and d.conf >= self.spec.min_conf
+            note = "" if ok else (" out-of-zone" if not in_zone else " weak")
+            boxes.append({"box": d.box, "species": d.species if ok else "", "confirmed": ok,
+                          "label": f"{d.species} {d.conf:.2f}{note}"})
+        boxes += [{**b, "label": b["label"] + " OK"} for b in self._boxes() if b["confirmed"]]
+        img = draw_overlay(frame, self.spec.zone and [list(p) for p in self.spec.zone], self.spec.direction, boxes)
+        with self._lock:
+            motion = self._motion
+        h = img.shape[0]
+        status = f"motion: {'YES' if motion else 'no'} | analysis: {'running' if analysing else 'idle'} | " \
+                 f"min_conf {self.spec.min_conf:.2f} confirm {self.spec.confirm_conf:.2f}"
+        k = max(1.0, max(img.shape[:2]) / 640)
+        for color, thick in (((0, 0, 0), round(3 * k)), ((255, 255, 255), max(1, round(k)))):
+            cv2.putText(img, status, (round(8 * k), h - round(10 * k)), cv2.FONT_HERSHEY_SIMPLEX, 0.5 * k, color,
+                        thick, cv2.LINE_AA)
+        return img
 
     # --- вспомогательное ---
 
@@ -171,8 +274,12 @@ class CameraWorker(threading.Thread):
         img = draw_overlay(frame, self.spec.zone and [list(p) for p in self.spec.zone], self.spec.direction,
                            self._boxes())
         snapshot = to_jpeg(img)
+        if self._session is not None:
+            self._session["events"] += 1
+        preds = [{"box": list(b["box"]), "species": b["species"], "conf": b["conf"], "identity_id": b["identity_id"]}
+                 for b in self._boxes(t.last_seen)]
         record = self.rt.recorder.save_event(self.spec.id, ev.kind, t.species, ident, t.mean_conf, iconf, t.id,
-                                             snapshot)
+                                             snapshot, raw=frame, predictions=preds)
         log.info("Камера %s: %s %s (трек %d, conf %.2f, объект %s)", self.spec.slug, t.species, ev.kind, t.id,
                  t.mean_conf, self.rt.identity_names.get(ident, "?") if ident else "-")
         self.rt.state.on_event(record, snapshot)

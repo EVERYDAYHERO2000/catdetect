@@ -27,8 +27,9 @@ DEFAULT_PARAMS = {
 
 
 class TrainingManager:
-    def __init__(self, settings: Settings, engine: Engine):
+    def __init__(self, settings: Settings, engine: Engine, device_for_training=None):
         self.settings = settings
+        self.device_for_training = device_for_training  # () -> "cpu" | "cuda:0" | "mps"
         self.engine = engine
         self._proc: subprocess.Popen | None = None
         self._job_id: int | None = None
@@ -58,8 +59,8 @@ class TrainingManager:
                 s.commit()
                 s.refresh(job)
             env = {**os.environ, "CATDETECT_DATA_DIR": str(self.settings.data_dir)}
-            if self.settings.device:
-                env["CATDETECT_DEVICE"] = self.settings.device
+            if self.device_for_training is not None:
+                env["CATDETECT_TRAIN_DEVICE"] = self.device_for_training()
             log_path = self.settings.training_dir / f"job_{job.id}.log"
             log_file = open(log_path, "wb")  # noqa: SIM115 — закрывается в _watch
             self._proc = subprocess.Popen(
@@ -167,7 +168,7 @@ def run_job(job_id: int) -> None:
         _update(engine, job_id, message="Обучение")
         model.train(
             data=data, epochs=epochs, imgsz=int(params["imgsz"]), batch=int(params["batch"]),
-            device=settings.device, project=str(settings.training_dir), name=f"{kind}_{job_id}",
+            device=os.environ.get("CATDETECT_TRAIN_DEVICE") or None, project=str(settings.training_dir), name=f"{kind}_{job_id}",
             exist_ok=True, patience=max(10, epochs // 4), workers=int(params.get("workers", 2)),
             plots=False, verbose=False,
         )

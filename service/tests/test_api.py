@@ -73,6 +73,12 @@ def test_labeling_and_dataset_export(authed, app):
     assert data_yaml.exists()
     labels = list((s.datasets_dir / "d" / "labels").rglob("*.txt"))
     assert labels and labels[0].read_text().startswith("0 ")
+    import yaml
+    assert yaml.safe_load(data_yaml.read_text())["names"] == {0: "cat", 1: "dog", 2: "person"}
+    person = authed.post("/api/identities", json={"name": "Илья", "species": "person"}).json()
+    r = authed.put(f"/api/images/{ids[0]}/annotations",
+                   json={"annotations": [{"box": [0.1, 0.1, 0.5, 0.9], "species": "person", "identity_id": person["id"]}]})
+    assert r.status_code == 200 and r.json()["annotations"][0]["species"] == "person"
     out, cmap = export_classify(app.state.engine, s.data_dir, s.datasets_dir / "c")
     assert set(cmap.values()) == {cat1["id"], cat2["id"]}
     assert list((out / "val").iterdir())
@@ -81,7 +87,7 @@ def test_labeling_and_dataset_export(authed, app):
         raise AssertionError
     except DatasetError:
         pass
-    crop = authed.get(f"/api/identities/crops/{detail['annotations'][0]['id']}")
+    crop = authed.get(f"/api/identities/crops/{r.json()['annotations'][0]['id']}")
     assert crop.headers["content-type"] == "image/jpeg"
 
 
@@ -100,3 +106,99 @@ def test_websocket_receives_events(authed, app):
         assert ws.receive_json()["type"] == "hello"
         app.state.bus.publish({"type": "config_changed"})
         assert ws.receive_json() == {"type": "config_changed"}
+
+
+def test_compute_preference(authed, monkeypatch):
+    from catdetect import compute
+
+    r = authed.get("/api/system/compute").json()
+    assert r["preference"] == "auto" and r["available"]["cpu"] is True
+    assert authed.put("/api/system/compute", json={"preference": "cpu"}).status_code == 200
+    assert authed.get("/api/system/compute").json()["preference"] == "cpu"
+    assert authed.put("/api/system/compute", json={"preference": "tpu"}).status_code == 422
+
+    monkeypatch.setattr(compute, "detect_gpu", lambda: ("cuda:0", "RTX"))
+    assert compute.resolve("auto").device == "cuda:0"
+    assert compute.resolve("cpu", "torch").device == "cpu"
+    monkeypatch.setattr(compute, "detect_gpu", lambda: None)
+    c = compute.resolve("gpu", "torch")
+    assert c.kind == "cpu" and c.fmt == "torch"
+
+
+def test_event_frame_to_labeling(authed, app):
+    import numpy as np
+
+    n = authed.post("/api/nvrs", json={"name": "N", "host": "127.0.0.1", "password": "x"}).json()
+    cam = authed.post("/api/cameras", json={"slug": "door", "name": "Дверь", "nvr_id": n["id"], "channel": 1}).json()
+    rec = app.state.runtime.recorder
+    frame = np.full((120, 160, 3), 90, np.uint8)
+    pred = [{"box": [0.1, 0.2, 0.4, 0.8], "species": "person", "conf": 0.7, "identity_id": None}]
+    ev = rec.save_event(cam["id"], "seen", "person", None, 0.7, None, 1, b"\xff\xd8fake", None, raw=frame, predictions=pred)
+    assert ev["has_raw"] is True and ev["image_id"] is None
+
+    r = authed.post(f"/api/events/{ev['id']}/label").json()
+    img = authed.get(f"/api/images/{r['image_id']}").json()
+    assert img["source"] == "event" and img["status"] == "unlabeled" and img["camera_id"] == cam["id"]
+    assert img["predictions"][0]["species"] == "person"
+    # повторно — тот же кадр, без дублей
+    assert authed.post(f"/api/events/{ev['id']}/label").json()["image_id"] == r["image_id"]
+    # кадр удалили из разметки — можно отправить снова
+    assert authed.delete(f"/api/images/{r['image_id']}").status_code == 200
+    assert authed.post(f"/api/events/{ev['id']}/label").json()["image_id"] != r["image_id"]
+    # событие без исходного кадра
+    ev2 = rec.save_event(cam["id"], "seen", "cat", None, 0.7, None, 1, None)
+    assert authed.post(f"/api/events/{ev2['id']}/label").status_code == 404
+
+
+def test_objects_folders_flow(authed, app):
+    import numpy as np
+
+    from catdetect.dataset import export_detect
+
+    rec = app.state.runtime.recorder
+    barsik = authed.post("/api/identities", json={"name": "Барсик", "species": "cat"}).json()
+    frame = np.full((120, 160, 3), 100, np.uint8)
+    preds = [
+        {"box": [0.1, 0.1, 0.3, 0.4], "species": "cat", "conf": 0.8, "identity_id": barsik["id"]},
+        {"box": [0.6, 0.6, 0.9, 0.9], "species": "cat", "conf": 0.4, "identity_id": None},
+    ]
+    image_ids = [rec.save_frame(None, frame, preds) for _ in range(12)]
+    s = authed.get("/api/objects/summary").json()
+    assert s["pending"] == 24 and s["folders"][0]["count"] == 0
+
+    crops = authed.get("/api/objects/crops?folder=pending&limit=500").json()
+    assert crops["total"] == 24
+    first = [c for c in crops["items"] if c["suggested_identity_id"] == barsik["id"]]
+    second = [c for c in crops["items"] if c["suggested_identity_id"] is None]
+    # подсказки классификатора принимаются одной кнопкой
+    assert authed.post("/api/objects/accept_suggestions", json={"ids": [c["id"] for c in first]}).json()["moved"] == 12
+    # вторая рамка — коврик: «Не объект»
+    assert authed.post("/api/objects/move", json={"ids": [c["id"] for c in second], "target": "rejected"}).json()["moved"] == 12
+
+    s = authed.get("/api/objects/summary").json()
+    assert s["pending"] == 0 and s["rejected"] == 12 and s["folders"][0]["count"] == 12
+    assert authed.get(f"/api/images/{image_ids[0]}").json()["status"] == "labeled"
+    # в редакторе кадра «Не объект» не показывается
+    assert len(authed.get(f"/api/images/{image_ids[0]}").json()["annotations"]) == 1
+
+    st = app.state.settings
+    data = export_detect(app.state.engine, st.data_dir, st.datasets_dir / "objects")
+    lines = [p.read_text() for p in (st.datasets_dir / "objects" / "labels").rglob("*.txt")]
+    assert all(t.count("\n") == 0 and t.startswith("0 ") for t in lines)  # одна рамка на кадр, без «коврика»
+    assert data.exists()
+
+    # перекладка обратно и удаление папки возвращают снимки в «Неразобранные»
+    authed.delete(f"/api/identities/{barsik['id']}")
+    s = authed.get("/api/objects/summary").json()
+    assert s["pending"] == 12 and s["folders"] == []
+    assert authed.get(f"/api/images/{image_ids[0]}").json()["status"] == "unlabeled"
+    assert authed.post("/api/objects/move", json={"ids": [1], "target": 999}).status_code == 404
+
+
+def test_camera_aspect_validation(authed):
+    n = authed.post("/api/nvrs", json={"name": "N", "host": "127.0.0.1"}).json()
+    base = {"slug": "a1", "name": "A", "nvr_id": n["id"], "channel": 1}
+    assert authed.post("/api/cameras", json={**base, "aspect": "16:9"}).json()["aspect"] == "16:9"
+    assert authed.post("/api/cameras", json={**base, "slug": "a2", "aspect": ""}).json()["aspect"] is None
+    assert authed.post("/api/cameras", json={**base, "slug": "a3", "aspect": "4/3"}).json()["aspect"] == "4:3"
+    assert authed.post("/api/cameras", json={**base, "slug": "a4", "aspect": "wide"}).status_code == 422

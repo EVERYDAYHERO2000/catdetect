@@ -1,8 +1,12 @@
-import { Fragment, useState } from "react";
+import { Link } from "react-router-dom";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { mdiCheckDecagramOutline, mdiCloseCircleOutline, mdiDeleteOutline, mdiPowerStandby, mdiSchool, mdiTextBoxOutline } from "@mdi/js";
+import Icon from "./Icon";
+import { useToast } from "./Toast";
 import { Identity, MlModel, TrainingJob, api, fmtTime } from "../api";
 import { useApi, useInterval } from "../hooks";
 
-const KIND = { detector: "Детектор (кошка/собака)", classifier: "Классификатор (кто именно)" } as const;
+const KIND = { detector: "Поиск на кадре (детектор)", classifier: "Узнавание: кто именно" } as const;
 const STATUS: Record<TrainingJob["status"], string> = { queued: "в очереди", running: "идёт", done: "готово", failed: "ошибка", cancelled: "отменено" };
 
 interface Stats {
@@ -22,7 +26,8 @@ function Metrics({ m }: { m: Record<string, number> | undefined }) {
   );
 }
 
-export default function Training() {
+/** Настройки → Модели: обучение по снимкам из папок раздела «Объекты» и выбор активной модели. */
+export default function ModelsPanel() {
   const { data: stats } = useApi<Stats>("/api/images/stats");
   const { data: identities } = useApi<Identity[]>("/api/identities");
   const { data: jobs, reload: reloadJobs } = useApi<TrainingJob[]>("/api/training/jobs");
@@ -39,13 +44,29 @@ export default function Training() {
   }, running ? 3000 : null);
   useInterval(reloadModels, running ? 10000 : null);
 
+  const toast = useToast();
+  // уведомление, когда обучение закончилось (статус меняется при опросе)
+  const prevStatus = useRef<Record<number, string>>({});
+  useEffect(() => {
+    for (const j of jobs ?? []) {
+      const prev = prevStatus.current[j.id];
+      if (prev && (prev === "running" || prev === "queued") && prev !== j.status) {
+        if (j.status === "done") toast.success(`${KIND[j.kind]}: обучение завершено — сравните метрики и активируйте модель`);
+        else if (j.status === "failed") toast.error(`${KIND[j.kind]}: обучение не удалось — ${j.message}`);
+      }
+      prevStatus.current[j.id] = j.status;
+    }
+  }, [jobs]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const start = async (kind: "detector" | "classifier") => {
     setError(null);
     try {
       await api("/api/training/jobs", { body: { kind, epochs: epochs[kind] } });
+      toast.info(`${KIND[kind]}: обучение запущено`);
       reloadJobs();
     } catch (e) {
       setError((e as Error).message);
+      toast.error((e as Error).message);
     }
   };
 
@@ -57,15 +78,18 @@ export default function Training() {
 
   const activate = async (m: MlModel) => {
     await api(`/api/models/${m.id}/activate`, { method: "POST" });
+    toast.success(`Модель «${m.name}» активирована`);
     reloadModels();
   };
   const deactivate = async (kind: string) => {
     await api(`/api/models/deactivate?kind=${kind}`, { method: "POST" });
+    toast.success(kind === "detector" ? "Используется стандартная модель поиска" : "Узнавание выключено");
     reloadModels();
   };
   const removeModel = async (m: MlModel) => {
     if (!confirm(`Удалить модель «${m.name}»?`)) return;
     await api(`/api/models/${m.id}`, { method: "DELETE" });
+    toast.success(`Модель «${m.name}» удалена`);
     reloadModels();
   };
 
@@ -75,28 +99,13 @@ export default function Training() {
 
   return (
     <div>
-      <h1>Обучение</h1>
       {error && <div className="error mb">{error}</div>}
       <div className="grid mb">
         <div className="panel stack">
-          <h2>{KIND.detector}</h2>
-          <div className="small muted">
-            Дообучает YOLO на ваших кадрах, например на ракурсе сверху над дверью, где стандартная модель ошибается.
-            Нужно ≥ 10 размеченных кадров с животными; хорошо — 200 и больше, вместе с кадрами «нет животных».
-          </div>
-          <div className="small">
-            Размечено кадров: <b>{labeled}</b> · кошек: <b>{stats?.by_species.cat ?? 0}</b> · собак: <b>{stats?.by_species.dog ?? 0}</b>
-          </div>
-          <div className="row">
-            <label className="field" style={{ width: 100 }}>Эпох<input type="number" value={epochs.detector} onChange={(e) => setEpochs({ ...epochs, detector: +e.target.value })} /></label>
-            <button className="primary" style={{ alignSelf: "flex-end" }} disabled={!!running || labeled < 10} onClick={() => start("detector")}>Обучить детектор</button>
-          </div>
-        </div>
-        <div className="panel stack">
           <h2>{KIND.classifier}</h2>
           <div className="small muted">
-            Учится различать ваших животных по вырезанным фрагментам. Нужно ≥ 2 объектов, у каждого ≥ 5 примеров;
-            хорошо — 50 и больше, с разным освещением и в ИК-режиме ночью.
+            Учится по снимкам из папок раздела <Link to="/objects">«Объекты»</Link> и после этого подписывает события именами:
+            «Барсик пришёл». Нужно хотя бы 2 папки по 5 снимков; хорошо — по 30–50, днём и ночью.
           </div>
           <div className="small">
             {identities?.map((i) => (
@@ -104,11 +113,26 @@ export default function Training() {
                 {i.name}: {stats?.by_identity[i.id] ?? 0}
               </span>
             ))}
-            {!identities?.length && <span className="muted">объектов нет</span>}
+            {!identities?.length && <span className="muted">папок пока нет</span>}
           </div>
           <div className="row">
             <label className="field" style={{ width: 100 }}>Эпох<input type="number" value={epochs.classifier} onChange={(e) => setEpochs({ ...epochs, classifier: +e.target.value })} /></label>
-            <button className="primary" style={{ alignSelf: "flex-end" }} disabled={!!running || identReady < 2} onClick={() => start("classifier")}>Обучить классификатор</button>
+            <button className="primary" style={{ alignSelf: "flex-end" }} disabled={!!running || identReady < 2} onClick={() => start("classifier")}><Icon path={mdiSchool} size={18} />Обучить узнавание</button>
+          </div>
+        </div>
+        <div className="panel stack">
+          <h2>{KIND.detector}</h2>
+          <div className="small muted">
+            Дополнительно. Нужно, если стандартная модель пропускает животных или людей на ваших камерах (например, при
+            виде сверху) или путает их с фоном. Учится на кадрах, где все объекты разложены, включая «Не объект».
+            Нужно хотя бы 10 кадров, хорошо — 200 и больше.
+          </div>
+          <div className="small">
+            Готово кадров: <b>{labeled}</b> · кошек: <b>{stats?.by_species.cat ?? 0}</b> · собак: <b>{stats?.by_species.dog ?? 0}</b> · людей: <b>{stats?.by_species.person ?? 0}</b>
+          </div>
+          <div className="row">
+            <label className="field" style={{ width: 100 }}>Эпох<input type="number" value={epochs.detector} onChange={(e) => setEpochs({ ...epochs, detector: +e.target.value })} /></label>
+            <button className="primary" style={{ alignSelf: "flex-end" }} disabled={!!running || labeled < 10} onClick={() => start("detector")}><Icon path={mdiSchool} size={18} />Обучить поиск</button>
           </div>
         </div>
       </div>
@@ -133,8 +157,8 @@ export default function Training() {
                   </td>
                   <td className="small muted">{fmtTime(j.created_at)}</td>
                   <td style={{ textAlign: "right" }}>
-                    <button className="small" onClick={() => showLog(j.id)}>лог</button>{" "}
-                    {j.status === "running" && <button className="small danger" onClick={() => api(`/api/training/jobs/${j.id}/cancel`, { method: "POST" }).then(reloadJobs)}>отменить</button>}
+                    <button className="small ghost" onClick={() => showLog(j.id)}><Icon path={mdiTextBoxOutline} size={14} />Лог</button>{" "}
+                    {j.status === "running" && <button className="small danger" onClick={() => api(`/api/training/jobs/${j.id}/cancel`, { method: "POST" }).then(() => (toast.info("Обучение отменено"), reloadJobs()))}><Icon path={mdiCloseCircleOutline} size={14} />Отменить</button>}
                   </td>
                 </tr>
                 {openLog === j.id && (
@@ -158,7 +182,7 @@ export default function Training() {
               <td>Базовая YOLO (COCO)</td><td>{KIND.detector}</td><td className="muted small">стандартная, без дообучения</td><td />
               <td style={{ textAlign: "right" }}>
                 {models?.models.some((m) => m.kind === "detector" && m.active)
-                  ? <button className="small" onClick={() => deactivate("detector")}>Использовать</button>
+                  ? <button className="small" onClick={() => deactivate("detector")}><Icon path={mdiCheckDecagramOutline} size={14} />Использовать</button>
                   : <span className="badge on">активна</span>}
               </td>
             </tr>
@@ -172,12 +196,12 @@ export default function Training() {
                   {m.active ? (
                     <>
                       <span className="badge on">активна</span>{" "}
-                      {m.kind === "classifier" && <button className="small" onClick={() => deactivate("classifier")}>Выключить</button>}
+                      {m.kind === "classifier" && <button className="small" onClick={() => deactivate("classifier")}><Icon path={mdiPowerStandby} size={14} />Выключить</button>}
                     </>
                   ) : (
                     <>
-                      <button className="small primary" onClick={() => activate(m)}>Активировать</button>{" "}
-                      <button className="small danger" onClick={() => removeModel(m)}>удалить</button>
+                      <button className="small primary" onClick={() => activate(m)}><Icon path={mdiCheckDecagramOutline} size={14} />Активировать</button>{" "}
+                      <button className="small danger" onClick={() => removeModel(m)}><Icon path={mdiDeleteOutline} size={14} />Удалить</button>
                     </>
                   )}
                 </td>

@@ -51,6 +51,12 @@
       },
       "identity_at_door": {
         "name": "At door"
+      },
+      "person_present": {
+        "name": "Person"
+      },
+      "person_at_door": {
+        "name": "Person at door"
       }
     },
     "sensor": {
@@ -80,7 +86,10 @@
               "cat_left": "Cat left the door",
               "dog_seen": "Dog seen",
               "dog_arrived": "Dog arrived at door",
-              "dog_left": "Dog left the door"
+              "dog_left": "Dog left the door",
+              "person_seen": "Person seen",
+              "person_arrived": "Person arrived at door",
+              "person_left": "Person left the door"
             }
           }
         }

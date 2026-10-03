@@ -1,5 +1,8 @@
 import { Link } from "react-router-dom";
+import { mdiPlus } from "@mdi/js";
 import { Camera, Nvr, SPECIES_LABEL } from "../api";
+import Icon from "../components/Icon";
+import SpeciesIcon from "../components/SpeciesIcon";
 import { useApi } from "../hooks";
 
 export default function Cameras() {
@@ -11,7 +14,7 @@ export default function Cameras() {
     <div>
       <div className="row between mb">
         <h1 style={{ margin: 0 }}>Камеры</h1>
-        <Link to="/cameras/new"><button className="primary">+ Добавить</button></Link>
+        <Link to="/cameras/new"><button className="primary"><Icon path={mdiPlus} size={18} />Добавить</button></Link>
       </div>
       {error && <div className="error mb">{error}</div>}
       {cams?.length === 0 && <div className="muted">Камер нет. Удобнее добавлять их со страницы регистратора после «Проверить связь».</div>}
@@ -29,7 +32,7 @@ export default function Cameras() {
                 {c.trigger === "motion" ? "по движению" : "постоянно"}
               </div>
               <div className="row">
-                {c.species.map((s) => <span key={s} className={`badge ${s}`}>{SPECIES_LABEL[s]}</span>)}
+                {c.species.map((s) => <span key={s} className={`badge ${s}`}><SpeciesIcon species={s} size={14} />{SPECIES_LABEL[s]}</span>)}
                 {c.zone && <span className="badge">зона</span>}
                 {c.direction && <span className="badge">направление</span>}
               </div>

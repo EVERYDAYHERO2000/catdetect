@@ -67,6 +67,7 @@ class Detector:
         self.names: dict[int, str] = dict(self.model.names)
         self._ids = {name: i for i, name in self.names.items()}
         self.avg_ms: float | None = None  # скользящее среднее времени кадра
+        self._skip = 0  # первые кадры нового размера идут медленно (прогрев) — в среднее не считаем
         log.info("Детектор загружен: %s", path)
 
     def class_ids(self, species: Iterable[str]) -> list[int]:
@@ -82,7 +83,13 @@ class Detector:
                 frame, conf=min_conf, classes=classes, imgsz=self.imgsz, device=self.device, verbose=False
             )[0]
             ms = (time.perf_counter() - t0) * 1000
-            self.avg_ms = ms if self.avg_ms is None else self.avg_ms * 0.9 + ms * 0.1
+            shape = frame.shape[:2]
+            if shape != getattr(self, "_shape", None):
+                self._shape, self._skip = shape, 2
+            if self._skip:
+                self._skip -= 1
+            else:
+                self.avg_ms = ms if self.avg_ms is None else self.avg_ms * 0.9 + ms * 0.1
         out: list[Detection] = []
         if res.boxes is None:
             return out
@@ -92,6 +99,7 @@ class Detector:
 
     def warmup(self) -> None:
         self.detect(np.zeros((480, 640, 3), dtype=np.uint8), self.names.values())
+        self.avg_ms = None
 
 
 class Identifier:

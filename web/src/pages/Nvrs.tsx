@@ -1,6 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Nvr, api } from "../api";
+import { mdiCheckCircleOutline, mdiContentSaveOutline, mdiDeleteOutline, mdiLanConnect, mdiPencilOutline, mdiPlus, mdiRefresh } from "@mdi/js";
+import { Camera, Nvr, api } from "../api";
+import Icon from "../components/Icon";
+import { useToast } from "../components/Toast";
+import ChannelGrid from "../components/ChannelGrid";
 import Modal from "../components/Modal";
 import { useApi } from "../hooks";
 
@@ -21,6 +25,14 @@ export default function Nvrs() {
   const [edit, setEdit] = useState<{ id: number | null; form: Form } | null>(null);
   const [probe, setProbe] = useState<Record<number, ProbeResult>>({});
   const [testing, setTesting] = useState<number | null>(null);
+  const toast = useToast();
+  const [snapVer, setSnapVer] = useState(0);
+  const { data: cams } = useApi<Camera[]>("/api/cameras");
+
+  // сразу показываем каналы всех регистраторов
+  useEffect(() => {
+    nvrs?.filter((n) => n.enabled && !probe[n.id]).forEach((n) => test(n.id));
+  }, [nvrs]); // eslint-disable-line react-hooks/exhaustive-deps
   const navigate = useNavigate();
 
   const test = async (id: number) => {
@@ -39,9 +51,10 @@ export default function Nvrs() {
     if (!confirm(`Удалить регистратор «${n.name}»?`)) return;
     try {
       await api(`/api/nvrs/${n.id}`, { method: "DELETE" });
+      toast.success(`Регистратор «${n.name}» удалён`);
       reload();
     } catch (e) {
-      alert((e as Error).message);
+      toast.error((e as Error).message);
     }
   };
 
@@ -49,7 +62,7 @@ export default function Nvrs() {
     <div>
       <div className="row between mb">
         <h1 style={{ margin: 0 }}>Регистраторы</h1>
-        <button className="primary" onClick={() => setEdit({ id: null, form: { ...EMPTY } })}>+ Добавить</button>
+        <button className="primary" onClick={() => setEdit({ id: null, form: { ...EMPTY } })}><Icon path={mdiPlus} size={18} />Добавить</button>
       </div>
       {error && <div className="error mb">{error}</div>}
       <div className="stack">
@@ -67,31 +80,25 @@ export default function Nvrs() {
                   {n.events_connected !== undefined && n.events_connected !== null && (
                     <span className={`badge ${n.events_connected ? "ok" : "danger"}`}>{n.events_connected ? "события: подключено" : "события: нет связи"}</span>
                   )}
-                  <button onClick={() => test(n.id)} disabled={testing === n.id}>{testing === n.id ? "Проверка…" : "Проверить связь"}</button>
-                  <button onClick={() => setEdit({ id: n.id, form: { ...n, password: "" } })}>Изменить</button>
-                  <button className="danger" onClick={() => remove(n)}>Удалить</button>
+                  <button onClick={() => test(n.id)} disabled={testing === n.id}><Icon path={mdiLanConnect} size={18} />{testing === n.id ? "Проверка…" : "Проверить связь"}</button>
+                  <button onClick={() => setEdit({ id: n.id, form: { ...n, password: "" } })}><Icon path={mdiPencilOutline} size={18} />Изменить</button>
+                  <button className="danger" onClick={() => remove(n)}><Icon path={mdiDeleteOutline} size={18} />Удалить</button>
                 </div>
               </div>
               {p && (p.ok ? (
                 <div className="stack">
-                  <div className="notice">✓ Связь есть: {p.device_type} {p.serial && <span className="muted">· S/N {p.serial}</span>}</div>
-                  {p.channels && p.channels.length > 0 && (
-                    <table>
-                      <thead><tr><th>Канал</th><th>Название</th><th /></tr></thead>
-                      <tbody>
-                        {p.channels.map((c) => (
-                          <tr key={c.channel}>
-                            <td>{c.channel}</td>
-                            <td>{c.name}</td>
-                            <td style={{ textAlign: "right" }}>
-                              <button className="small" onClick={() => navigate(`/cameras/new?nvr=${n.id}&channel=${c.channel}&name=${encodeURIComponent(c.name)}`)}>
-                                Добавить камеру
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div className="notice"><Icon path={mdiCheckCircleOutline} size={18} />Связь есть: {p.device_type} {p.serial && <span className="muted">· S/N {p.serial}</span>}</div>
+                  {p.channels && p.channels.length > 0 ? (
+                    <>
+                      <div className="row between">
+                        <span className="small muted">Каналы ({p.channels.length}). Нажмите на превью, чтобы увеличить.</span>
+                        <button className="small" onClick={() => setSnapVer(Date.now())}><Icon path={mdiRefresh} size={16} />Обновить превью</button>
+                      </div>
+                      <ChannelGrid nvrId={n.id} channels={p.channels} cameras={cams ?? []} version={snapVer}
+                        onAdd={(c) => navigate(`/cameras/new?nvr=${n.id}&channel=${c.channel}&name=${encodeURIComponent(c.name)}`)} />
+                    </>
+                  ) : (
+                    <div className="small muted">Регистратор не сообщил список каналов — добавьте камеру вручную на странице «Камеры».</div>
                   )}
                 </div>
               ) : (
@@ -101,7 +108,11 @@ export default function Nvrs() {
           );
         })}
       </div>
-      {edit && <NvrForm initial={edit} onClose={() => setEdit(null)} onSaved={() => (setEdit(null), reload())} />}
+      {edit && <NvrForm initial={edit} onClose={() => setEdit(null)} onSaved={() => {
+        toast.success(edit.id ? "Настройки регистратора сохранены" : "Регистратор добавлен");
+        setEdit(null);
+        reload();
+      }} />}
     </div>
   );
 }
@@ -166,11 +177,11 @@ function NvrForm({ initial, onClose, onSaved }: { initial: { id: number | null; 
         <div className="small muted">
           Рекомендуется завести на регистраторе отдельного пользователя с правами только на просмотр. Пароль хранится в базе сервиса вне Яндекс Диска.
         </div>
-        {probe && (probe.ok ? <div className="notice">✓ {probe.device_type}, каналов: {probe.channels?.length ?? "?"}</div> : <div className="error">{probe.error}</div>)}
+        {probe && (probe.ok ? <div className="notice"><Icon path={mdiCheckCircleOutline} size={18} />{probe.device_type}, каналов: {probe.channels?.length ?? "?"}</div> : <div className="error">{probe.error}</div>)}
         {error && <div className="error">{error}</div>}
         <div className="row">
-          <button className="primary" onClick={save} disabled={busy}>Сохранить</button>
-          <button onClick={test} disabled={busy || !f.host}>Проверить связь</button>
+          <button className="primary" onClick={save} disabled={busy}><Icon path={mdiContentSaveOutline} size={18} />Сохранить</button>
+          <button onClick={test} disabled={busy || !f.host}><Icon path={mdiLanConnect} size={18} />Проверить связь</button>
         </div>
       </div>
     </Modal>

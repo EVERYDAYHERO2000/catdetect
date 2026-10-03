@@ -44,6 +44,7 @@ class CameraIn(BaseModel):
     confirm_conf: float = Field(0.5, gt=0, lt=1)
     identity_conf: float = Field(0.6, gt=0, lt=1)
     save_frames: bool = True
+    aspect: str | None = Field(None, pattern=r"^\d{1,4}(\.\d{1,3})?:\d{1,4}(\.\d{1,3})?$")
     enabled: bool = True
 
     @field_validator("species")
@@ -60,6 +61,11 @@ class CameraIn(BaseModel):
         if v is not None and len(v) < 3:
             return None  # незамкнутый полигон — без зоны
         return v
+
+    @field_validator("aspect", mode="before")
+    @classmethod
+    def _aspect(cls, v):
+        return (v.strip().replace("/", ":") or None) if isinstance(v, str) else v
 
     @field_validator("source_url")
     @classmethod
@@ -158,10 +164,25 @@ async def _frame(camera_id: int, db, rt):
     if frame is None:
         url = camera_url(c, db.get(Nvr, c.nvr_id) if c.nvr_id else None)
         if url:
-            frame = await run_in_threadpool(grab_frame, url)
+            frame = await run_in_threadpool(grab_frame, url, 10.0, c.aspect)
     if frame is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Нет кадра с камеры")
     return c, frame
+
+
+@router.get("/{camera_id}/stream_info")
+async def stream_info(camera_id: int, _: Auth, db: Db, rt: Rt):
+    """Размер кадра в потоке (до приведения пропорций) — подсказка для выбора пропорций."""
+    c = db.get(Camera, camera_id)
+    if c is None:
+        raise not_found("Камера")
+    w = rt.worker(camera_id)
+    native = w.reader.native_size if w is not None else None
+    if native is None:
+        url = camera_url(c, db.get(Nvr, c.nvr_id) if c.nvr_id else None)
+        frame = await run_in_threadpool(grab_frame, url) if url else None
+        native = (frame.shape[1], frame.shape[0]) if frame is not None else None
+    return {"native": native, "aspect": c.aspect}
 
 
 @router.get("/{camera_id}/snapshot")
@@ -186,6 +207,18 @@ def last_snapshot(camera_id: int, _: Auth, rt: Rt, db: Db):
     return Response((rt.settings.data_dir / ev.snapshot_path).read_bytes(), media_type="image/jpeg")
 
 
+@router.get("/{camera_id}/debug")
+async def debug_view(camera_id: int, _: Auth, rt: Rt):
+    """Живой просмотр: что видит детектор прямо сейчас (включая слабые и отброшенные зоной рамки)."""
+    w = rt.worker(camera_id)
+    if w is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Камера выключена или ещё запускается")
+    img = await run_in_threadpool(w.debug_image)
+    if img is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Нет кадра или модель ещё не загружена")
+    return Response(to_jpeg(img, 80), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 @router.post("/{camera_id}/detect")
 async def test_detect(camera_id: int, _: Auth, db: Db, rt: Rt):
     """Прогнать детектор на текущем кадре с текущими настройками камеры."""
@@ -198,7 +231,7 @@ async def test_detect(camera_id: int, _: Auth, db: Db, rt: Rt):
 
 class TestEventIn(BaseModel):
     kind: Literal["seen", "arrived", "left"] = "arrived"
-    species: Literal["cat", "dog"] = "cat"
+    species: Literal["cat", "dog", "person"] = "cat"
     identity_id: int | None = None
 
 
@@ -211,6 +244,6 @@ async def test_event(camera_id: int, body: TestEventIn, _: Auth, db: Db, rt: Rt)
     frame = rt.latest_frame(camera_id)
     snapshot = to_jpeg(draw_overlay(frame, c.zone, c.direction)) if frame is not None else None
     record = await run_in_threadpool(rt.recorder.save_event, camera_id, body.kind, body.species, body.identity_id,
-                                     1.0, 1.0 if body.identity_id else None, 0, snapshot)
+                                     1.0, 1.0 if body.identity_id else None, 0, snapshot, None, frame, [])
     rt.state.on_event(record, snapshot)
     return record

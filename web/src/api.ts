@@ -1,6 +1,7 @@
 export type Point = [number, number];
 export type Box = [number, number, number, number];
-export type Species = "cat" | "dog";
+export type Species = "cat" | "dog" | "person";
+export const ALL_SPECIES: Species[] = ["cat", "dog", "person"];
 
 export interface Direction {
   line: [Point, Point];
@@ -42,6 +43,7 @@ export interface Camera {
   confirm_conf: number;
   identity_conf: number;
   save_frames: boolean;
+  aspect: string | null;
   enabled: boolean;
 }
 
@@ -88,13 +90,23 @@ export interface EventItem {
   id: number;
   camera_id: number;
   ts: string;
-  kind: "seen" | "arrived" | "left";
-  species: Species;
+  kind: "seen" | "arrived" | "left" | "motion";
+  species: Species | "";
   identity_id: number | null;
   confidence: number;
+  details?: MotionDetails | null;
+  has_raw?: boolean;
+  image_id?: number | null;
   identity_confidence: number | null;
   track_id: number;
   has_snapshot: boolean;
+}
+
+export interface MotionDetails {
+  duration: number;
+  frames: number;
+  events: number;
+  best: { species: Species; conf: number; reason: "ok" | "below_confirm" | "weak" | "out_of_zone" } | null;
 }
 
 export interface CameraState {
@@ -143,6 +155,11 @@ export interface MlModel {
   active: boolean;
 }
 
+/** Адреса картинок с версией: id после удаления записей могут повторяться, и браузер не должен брать старое из кеша. */
+export const eventImage = (e: Pick<EventItem, "id" | "ts">) => `/api/events/${e.id}/image?v=${encodeURIComponent(e.ts)}`;
+export const imageFile = (img: Pick<ImageItem, "id" | "captured_at">) =>
+  `/api/images/${img.id}/file?v=${encodeURIComponent(img.captured_at)}`;
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -178,8 +195,34 @@ export async function api<T = unknown>(path: string, opts: { method?: string; bo
   return data as T;
 }
 
-export const SPECIES_LABEL: Record<Species, string> = { cat: "Кошка", dog: "Собака" };
-export const EVENT_LABEL: Record<EventItem["kind"], string> = { seen: "замечен", arrived: "пришёл к двери", left: "ушёл от двери" };
+export const SPECIES_LABEL: Record<Species, string> = { cat: "Кошка", dog: "Собака", person: "Человек" };
+export const EVENT_LABEL: Record<EventItem["kind"], string> = { seen: "замечен", arrived: "пришёл к двери", left: "ушёл от двери", motion: "движение" };
+
+// «Кошка», «Собака» — женский род
+const EVENT_LABEL_F = { seen: "замечена", arrived: "пришла к двери", left: "ушла от двери" } as const;
+
+const REASON: Record<NonNullable<MotionDetails["best"]>["reason"], string> = {
+  ok: "прошла порог",
+  below_confirm: "ниже порога подтверждения",
+  weak: "ниже порога кадра",
+  out_of_zone: "вне зоны",
+};
+
+/** Подпись события: «Человек замечен» или разбор эпизода движения. */
+export function describeEvent(e: EventItem, identName?: string | null): { title: string; note?: string } {
+  if (e.kind === "motion") {
+    const d = e.details;
+    const b = d?.best;
+    const note = d
+      ? `${d.duration} с, кадров ${d.frames}, событий ${d.events}` +
+        (b ? ` · лучшая: ${SPECIES_LABEL[b.species]} ${Math.round(b.conf * 100)}% — ${REASON[b.reason]}` : " · ничего не найдено")
+      : undefined;
+    return { title: "Движение", note };
+  }
+  const feminine = !identName && (e.species === "cat" || e.species === "dog");
+  const verb = feminine ? EVENT_LABEL_F[e.kind as Exclude<EventItem["kind"], "motion">] : EVENT_LABEL[e.kind];
+  return { title: `${identName ?? (e.species ? SPECIES_LABEL[e.species] : "")} ${verb}` };
+}
 
 export function fmtTime(iso: string | number | null | undefined): string {
   if (iso === null || iso === undefined) return "—";

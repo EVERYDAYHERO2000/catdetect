@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlmodel import col, func, select
 
 from ..annotate import read_image, to_jpeg
+from ..labels import PENDING, refresh_image_status
 from ..models import Annotation, Event, Identity, Image
 from ..vision.detector import crop
 from .deps import Auth, Cfg, Db, Rt, not_found, reload_config_async
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/api/identities", tags=["identities"])
 
 class IdentityIn(BaseModel):
     name: str = Field(min_length=1, max_length=64)
-    species: Literal["cat", "dog"] = "cat"
+    species: Literal["cat", "dog", "person"] = "cat"
     is_own: bool = True
     notes: str = ""
 
@@ -58,9 +59,16 @@ def delete_identity(identity_id: int, _: Auth, db: Db, rt: Rt):
     i = db.get(Identity, identity_id)
     if i is None:
         raise not_found("Объект")
+    touched = []
     for a in db.exec(select(Annotation).where(Annotation.identity_id == identity_id)).all():
-        a.identity_id = None
+        a.identity_id, a.state, a.assigned_at = None, PENDING, None  # снимки папки возвращаются в «Неразобранные»
         db.add(a)
+        touched.append(a.image_id)
+    for a in db.exec(select(Annotation).where(Annotation.suggested_identity_id == identity_id)).all():
+        a.suggested_identity_id = None
+        db.add(a)
+    db.flush()
+    refresh_image_status(db, touched)
     for ev in db.exec(select(Event).where(Event.identity_id == identity_id)).all():
         ev.identity_id = None
         db.add(ev)
@@ -87,4 +95,4 @@ def annotation_crop(annotation_id: int, _: Auth, db: Db, cfg: Cfg):
     if frame is None:
         raise not_found("Файл")
     return Response(to_jpeg(crop(frame, (a.x1, a.y1, a.x2, a.y2), pad=0.1)), media_type="image/jpeg",
-                    headers={"Cache-Control": "max-age=3600"})
+                    headers={"Cache-Control": "no-store"})
