@@ -1,0 +1,20 @@
+# Вариант без GPU (например, TrueNAS SCALE: Apps → Custom App / docker compose).
+# Детекция на CPU медленнее: ставьте fps 2–3 и меньшую модель (CATDETECT_BASE_DETECTOR=yolo26s.pt).
+services:
+  catdetect:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        TORCH_INDEX: https://download.pytorch.org/whl/cpu
+    image: catdetect:cpu
+    container_name: catdetect
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    shm_size: 1gb
+    volumes:
+      - /mnt/pool/apps/catdetect:/data
+    environment:
+      TZ: Europe/Moscow
+      CATDETECT_BASE_DETECTOR: yolo26s.pt

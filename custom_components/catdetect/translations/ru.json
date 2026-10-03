@@ -1,0 +1,107 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "CatDetect",
+        "description": "Адрес сервиса CatDetect и API-токен (создаётся в веб-интерфейсе сервиса: Настройки → Подключение Home Assistant).",
+        "data": {
+          "url": "Адрес сервиса",
+          "token": "API-токен"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Новый токен CatDetect",
+        "description": "Токен недействителен. Создайте новый в веб-интерфейсе сервиса.",
+        "data": {
+          "token": "API-токен"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Не удалось подключиться к сервису",
+      "invalid_auth": "Неверный токен"
+    },
+    "abort": {
+      "already_configured": "Этот сервис уже добавлен",
+      "reauth_successful": "Токен обновлён"
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "cat_present": {
+        "name": "Кошка"
+      },
+      "dog_present": {
+        "name": "Собака"
+      },
+      "cat_at_door": {
+        "name": "Кошка у двери"
+      },
+      "dog_at_door": {
+        "name": "Собака у двери"
+      },
+      "motion": {
+        "name": "Движение"
+      },
+      "online": {
+        "name": "Видеопоток"
+      },
+      "identity_present": {
+        "name": "В кадре"
+      },
+      "identity_at_door": {
+        "name": "У двери"
+      }
+    },
+    "sensor": {
+      "last_direction": {
+        "name": "Последнее направление",
+        "state": {
+          "arrived": "Пришёл",
+          "left": "Ушёл",
+          "unknown": "Неизвестно"
+        }
+      },
+      "last_seen": {
+        "name": "Последний раз замечен"
+      },
+      "last_camera": {
+        "name": "Последняя камера"
+      }
+    },
+    "event": {
+      "camera_events": {
+        "name": "Животные",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "cat_seen": "Кошка замечена",
+              "cat_arrived": "Кошка пришла к двери",
+              "cat_left": "Кошка ушла от двери",
+              "dog_seen": "Собака замечена",
+              "dog_arrived": "Собака пришла к двери",
+              "dog_left": "Собака ушла от двери"
+            }
+          }
+        }
+      },
+      "identity_events": {
+        "name": "События",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "seen": "Замечен",
+              "arrived": "Пришёл к двери",
+              "left": "Ушёл от двери"
+            }
+          }
+        }
+      }
+    },
+    "image": {
+      "last_snapshot": {
+        "name": "Последний снимок"
+      }
+    }
+  }
+}

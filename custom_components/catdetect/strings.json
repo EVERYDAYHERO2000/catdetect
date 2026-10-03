@@ -1,0 +1,107 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "CatDetect",
+        "description": "CatDetect service URL and API token (create it in the service web UI: Settings → Home Assistant).",
+        "data": {
+          "url": "Service URL",
+          "token": "API token"
+        }
+      },
+      "reauth_confirm": {
+        "title": "New CatDetect token",
+        "description": "The token is no longer valid. Create a new one in the service web UI.",
+        "data": {
+          "token": "API token"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the service",
+      "invalid_auth": "Invalid token"
+    },
+    "abort": {
+      "already_configured": "This service is already configured",
+      "reauth_successful": "Token updated"
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "cat_present": {
+        "name": "Cat"
+      },
+      "dog_present": {
+        "name": "Dog"
+      },
+      "cat_at_door": {
+        "name": "Cat at door"
+      },
+      "dog_at_door": {
+        "name": "Dog at door"
+      },
+      "motion": {
+        "name": "Motion"
+      },
+      "online": {
+        "name": "Video stream"
+      },
+      "identity_present": {
+        "name": "In view"
+      },
+      "identity_at_door": {
+        "name": "At door"
+      }
+    },
+    "sensor": {
+      "last_direction": {
+        "name": "Last direction",
+        "state": {
+          "arrived": "Arrived",
+          "left": "Left",
+          "unknown": "Unknown"
+        }
+      },
+      "last_seen": {
+        "name": "Last seen"
+      },
+      "last_camera": {
+        "name": "Last camera"
+      }
+    },
+    "event": {
+      "camera_events": {
+        "name": "Animals",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "cat_seen": "Cat seen",
+              "cat_arrived": "Cat arrived at door",
+              "cat_left": "Cat left the door",
+              "dog_seen": "Dog seen",
+              "dog_arrived": "Dog arrived at door",
+              "dog_left": "Dog left the door"
+            }
+          }
+        }
+      },
+      "identity_events": {
+        "name": "Events",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "seen": "Seen",
+              "arrived": "Arrived at door",
+              "left": "Left the door"
+            }
+          }
+        }
+      }
+    },
+    "image": {
+      "last_snapshot": {
+        "name": "Last snapshot"
+      }
+    }
+  }
+}

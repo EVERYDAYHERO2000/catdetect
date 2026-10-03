@@ -1,0 +1,25 @@
+# Секреты и данные никогда не попадают в репозиторий (и на Яндекс Диск):
+# они живут в ~/.config/catdetect/.env и в каталоге данных (~/catdetect-data, C:\catdetect-data)
+.env
+*.env
+!*.env.example
+
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+
+node_modules
+web/dist/
+
+*.pt
+*.onnx
+*_openvino_model/
+data/
+runs/
+.DS_Store
+.claude/
+*.tsbuildinfo

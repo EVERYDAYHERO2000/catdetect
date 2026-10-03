@@ -1,0 +1,8 @@
+**/node_modules
+web/dist
+.git
+.claude
+**/__pycache__
+**/*.pt
+**/.pytest_cache
+custom_components

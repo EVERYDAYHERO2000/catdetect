@@ -1,0 +1,28 @@
+# Windows + Docker Desktop (WSL2) + NVIDIA. Запуск из корня репозитория:
+#   docker compose -f docker/compose.yml up -d --build
+# Данные (БД с паролями регистраторов, кадры, модели) — в C:\catdetect-data, вне Яндекс Диска.
+services:
+  catdetect:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: catdetect:latest
+    container_name: catdetect
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    shm_size: 2gb  # загрузчикам данных при обучении
+    volumes:
+      - C:/catdetect-data:/data
+    environment:
+      TZ: Europe/Moscow
+    env_file:
+      - path: C:/catdetect-data/.env  # необязательный файл с переменными CATDETECT_*
+        required: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
