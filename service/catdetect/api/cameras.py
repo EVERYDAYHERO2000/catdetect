@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+import cv2
+import numpy as np
+
 from fastapi import APIRouter, HTTPException, Response, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
 from sqlmodel import select
 
 from ..annotate import draw_overlay, to_jpeg
+from ..imaging import image_response
 from ..models import SPECIES, Camera, Event, Image, Nvr
-from ..nvr.reader import grab_frame
+from ..nvr.reader import apply_aspect, grab_frame
 from ..runtime import camera_url
 from ..vision.geometry import DirectionRule
 from .deps import Auth, Db, Rt, not_found, reload_config_async
@@ -199,12 +203,20 @@ def last_snapshot(camera_id: int, _: Auth, rt: Rt, db: Db):
     """Снимок последнего события с разметкой (для сущности image в HA)."""
     snap = rt.state.last_snapshot(camera_id)
     if snap is not None:
-        return Response(snap[1], media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+        c = db.get(Camera, camera_id)
+        data = snap[1]
+        if c and c.aspect:
+            frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+            fixed = apply_aspect(frame, c.aspect) if frame is not None else None
+            if fixed is not None and fixed is not frame:
+                data = to_jpeg(fixed, 90)
+        return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
     ev = db.exec(select(Event).where(Event.camera_id == camera_id, Event.snapshot_path != None)  # noqa: E711
                  .order_by(Event.ts.desc())).first()
     if ev is None:
         raise not_found("Снимок")
-    return Response((rt.settings.data_dir / ev.snapshot_path).read_bytes(), media_type="image/jpeg")
+    c = db.get(Camera, camera_id)
+    return image_response(rt.settings.data_dir / ev.snapshot_path, c.aspect if c else None)
 
 
 @router.get("/{camera_id}/debug")

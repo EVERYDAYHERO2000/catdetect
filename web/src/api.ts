@@ -156,7 +156,8 @@ export interface MlModel {
 }
 
 /** Адреса картинок с версией: id после удаления записей могут повторяться, и браузер не должен брать старое из кеша. */
-export const eventImage = (e: Pick<EventItem, "id" | "ts">) => `/api/events/${e.id}/image?v=${encodeURIComponent(e.ts)}`;
+export const eventImage = (e: Pick<EventItem, "id" | "ts">, w?: number) =>
+  `/api/events/${e.id}/image?v=${encodeURIComponent(e.ts)}${w ? `&w=${w}` : ""}`;
 export const imageFile = (img: Pick<ImageItem, "id" | "captured_at">) =>
   `/api/images/${img.id}/file?v=${encodeURIComponent(img.captured_at)}`;
 

@@ -6,7 +6,8 @@ from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
 from sqlmodel import col, func, select
 
-from ..annotate import read_image, to_jpeg
+from ..annotate import to_jpeg
+from ..imaging import camera_aspect, load_frame
 from ..labels import PENDING, refresh_image_status
 from ..models import Annotation, Event, Identity, Image
 from ..vision.detector import crop
@@ -91,7 +92,7 @@ def annotation_crop(annotation_id: int, _: Auth, db: Db, cfg: Cfg):
     img = db.get(Image, a.image_id) if a else None
     if img is None:
         raise not_found("Пример")
-    frame = read_image(cfg.data_dir / img.path)
+    frame = load_frame(cfg.data_dir / img.path, camera_aspect(db, img.camera_id))
     if frame is None:
         raise not_found("Файл")
     return Response(to_jpeg(crop(frame, (a.x1, a.y1, a.x2, a.y2), pad=0.1)), media_type="image/jpeg",

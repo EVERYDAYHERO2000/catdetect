@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ALL_SPECIES, AnnotationItem, imageFile, Box, Camera, Identity, ImageItem, Point, Prediction, SPECIES_LABEL, Species, api, fmtTime } from "../api";
 import { mdiArrowLeft, mdiAutoFix, mdiContentSaveOutline, mdiDeleteOutline, mdiImageOffOutline } from "@mdi/js";
+import Hint from "../components/Hint";
 import Icon from "../components/Icon";
 import ImageCanvas from "../components/ImageCanvas";
 import { useToast } from "../components/Toast";
@@ -245,7 +246,12 @@ function Editor({ imageId }: { imageId: number }) {
 
         <div className="stack">
           <div className="panel stack">
-            <h3>Объекты на кадре ({boxes.length})</h3>
+            <h3 className="label-text">Объекты на кадре ({boxes.length})<Hint>
+              Мышь: тяните по пустому месту, чтобы нарисовать рамку; клик выбирает рамку, углы меняют её размер.
+              Клавиши: <span className="kbd">1</span>…<span className="kbd">9</span> — папка, <span className="kbd">0</span> — без папки,{" "}
+              <span className="kbd">C</span> кошка, <span className="kbd">D</span> собака, <span className="kbd">P</span> человек,{" "}
+              <span className="kbd">Del</span> удалить. Рамка без выбранной папки попадёт в «Неразобранные».
+            </Hint></h3>
             {boxes.length === 0 && <div className="small muted">Нарисуйте рамку мышью вокруг животного или человека.</div>}
             {boxes.map((b, i) => (
               <div key={i} className="stack" style={{ gap: 6, padding: 8, borderRadius: 6, border: `1px solid ${i === sel ? "var(--accent)" : "var(--border)"}` }}
@@ -280,12 +286,6 @@ function Editor({ imageId }: { imageId: number }) {
             <button className="danger" onClick={removeImage}><Icon path={mdiDeleteOutline} size={18} />Удалить кадр</button>
           </div>
 
-          <div className="panel small muted stack" style={{ gap: 4 }}>
-            <div><b>Мышь:</b> тяните по пустому месту, чтобы нарисовать рамку; клик выбирает рамку, углы меняют её размер.</div>
-            <div><span className="kbd">1</span>…<span className="kbd">9</span> — объект, <span className="kbd">0</span> — неизвестный</div>
-            <div><span className="kbd">C</span> кошка, <span className="kbd">D</span> собака, <span className="kbd">P</span> человек, <span className="kbd">Del</span> удалить</div>
-            <div>Рамка без выбранной папки попадёт в «Неразобранные».</div>
-          </div>
         </div>
       </div>
     </div>

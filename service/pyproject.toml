@@ -15,6 +15,7 @@ dependencies = [
     "pyyaml>=6",
     "numpy",
     "opencv-python-headless>=4.8",
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]

@@ -7,12 +7,12 @@ from typing import Literal
 import cv2
 import numpy as np
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlmodel import col, func, select
 
 from ..annotate import read_image
+from ..imaging import camera_aspect, image_response
 from ..labels import ASSIGNED, PENDING, REJECTED, move, refresh_image_status
 from ..models import SPECIES, Annotation, Event, Identity, Image, utcnow
 from ..vision.detector import crop
@@ -79,14 +79,14 @@ def get_image(image_id: int, _: Auth, db: Db):
 
 
 @router.get("/{image_id}/file")
-def image_file(image_id: int, _: Auth, db: Db, cfg: Cfg):
+def image_file(image_id: int, _: Auth, db: Db, cfg: Cfg, w: int | None = None):
     img = db.get(Image, image_id)
     if img is None:
         raise not_found("Кадр")
     path = cfg.data_dir / img.path
     if not path.exists():
         raise not_found("Файл")
-    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+    return image_response(path, camera_aspect(db, img.camera_id), min(w, 1920) if w else None)
 
 
 def _detect_all(rt, frame) -> list[dict]:

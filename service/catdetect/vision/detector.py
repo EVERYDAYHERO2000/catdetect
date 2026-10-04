@@ -67,6 +67,7 @@ class Detector:
         self.names: dict[int, str] = dict(self.model.names)
         self._ids = {name: i for i, name in self.names.items()}
         self.avg_ms: float | None = None  # скользящее среднее времени кадра
+        self.calls = 0  # сколько кадров обработано — для подсчёта кадров/сек на «Обзоре»
         self._skip = 0  # первые кадры нового размера идут медленно (прогрев) — в среднее не считаем
         log.info("Детектор загружен: %s", path)
 
@@ -83,6 +84,7 @@ class Detector:
                 frame, conf=min_conf, classes=classes, imgsz=self.imgsz, device=self.device, verbose=False
             )[0]
             ms = (time.perf_counter() - t0) * 1000
+            self.calls += 1
             shape = frame.shape[:2]
             if shape != getattr(self, "_shape", None):
                 self._shape, self._skip = shape, 2

@@ -10,9 +10,10 @@ import yaml
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, select
 
-from .annotate import read_image, write_jpeg
+from .annotate import write_jpeg
 from .labels import ASSIGNED
-from .models import SPECIES, Annotation, Identity, Image
+from .imaging import load_frame
+from .models import SPECIES, Annotation, Camera, Identity, Image
 from .vision.detector import crop
 
 VAL_EVERY = 5  # каждый 5-й кадр — в валидацию
@@ -30,6 +31,7 @@ def export_detect(engine: Engine, data_dir: Path, out: Path, min_images: int = 1
     """images/{train,val} + labels/{train,val} + data.yaml. Кадры без боксов — негативные примеры."""
     with Session(engine) as s:
         images = s.exec(select(Image).where(Image.status == "labeled").order_by(Image.id)).all()
+        aspects = {c.id: c.aspect for c in s.exec(select(Camera)).all()}
         anns: dict[int, list[Annotation]] = defaultdict(list)
         for a in s.exec(select(Annotation)).all():
             anns[a.image_id].append(a)
@@ -48,7 +50,11 @@ def export_detect(engine: Engine, data_dir: Path, out: Path, min_images: int = 1
         has_val |= split == "val"
         (out / "images" / split).mkdir(parents=True, exist_ok=True)
         (out / "labels" / split).mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, out / "images" / split / f"{img.id}.jpg")
+        aspect = aspects.get(img.camera_id)
+        if aspect:  # обучаем на кадрах в тех же пропорциях, что видит модель в работе
+            write_jpeg(out / "images" / split / f"{img.id}.jpg", load_frame(src, aspect), quality=95)
+        else:
+            shutil.copyfile(src, out / "images" / split / f"{img.id}.jpg")
         lines = []
         for a in anns.get(img.id, []):
             if a.species not in cls_index or a.state != ASSIGNED:  # «Не объект» — просто фон
@@ -70,6 +76,7 @@ def export_classify(engine: Engine, data_dir: Path, out: Path, min_per_class: in
     """Кропы размеченных животных: {train,val}/id_<identity>/*.jpg. Возвращает каталог и карту класс→identity_id."""
     with Session(engine) as s:
         idents = {i.id: i for i in s.exec(select(Identity)).all()}
+        aspects = {c.id: c.aspect for c in s.exec(select(Camera)).all()}
         rows = s.exec(select(Annotation, Image).join(Image, Image.id == Annotation.image_id)
                       .where(col(Annotation.identity_id).is_not(None), Annotation.state == ASSIGNED)
                       .order_by(Annotation.id)).all()
@@ -93,7 +100,7 @@ def export_classify(engine: Engine, data_dir: Path, out: Path, min_per_class: in
         for n, (a, img) in enumerate(items):
             if img.id not in cache:
                 cache.clear()  # держим в памяти только текущий кадр
-                cache[img.id] = read_image(data_dir / img.path)
+                cache[img.id] = load_frame(data_dir / img.path, aspects.get(img.camera_id))
             frame = cache[img.id]
             if frame is None:
                 continue

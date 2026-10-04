@@ -6,10 +6,10 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
 from sqlmodel import Session, col, select
 
 from ..auth import authenticate
+from ..imaging import camera_aspect, image_response
 from ..models import Camera, Event, Identity
 from ..recorder import event_to_dict
 from .deps import Auth, Cfg, Db, Rt, not_found
@@ -40,15 +40,15 @@ def list_events(_: Auth, db: Db, camera_id: int | None = None, identity_id: int 
 
 
 @router.get("/api/events/{event_id}/image")
-def event_image(event_id: int, _: Auth, db: Db, cfg: Cfg):
+def event_image(event_id: int, _: Auth, db: Db, cfg: Cfg, w: int | None = None):
     ev = db.get(Event, event_id)
     if ev is None or not ev.snapshot_path:
         raise not_found("Снимок")
     path = cfg.data_dir / ev.snapshot_path
     if not path.exists():
         raise not_found("Снимок")
-    # no-cache + ETag: id событий могут переиспользоваться после удаления — браузер всегда сверяет версию
-    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+    # no-cache: браузер всегда сверяет версию; пропорции — как в настройках камеры
+    return image_response(path, camera_aspect(db, ev.camera_id), min(w, 1920) if w else None)
 
 
 @router.post("/api/events/{event_id}/label")

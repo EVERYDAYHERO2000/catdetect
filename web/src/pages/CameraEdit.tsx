@@ -6,6 +6,7 @@ import {
   mdiRefresh, mdiStop, mdiVectorLine, mdiVectorPolygon,
 } from "@mdi/js";
 import ChannelGrid, { ChannelInfo } from "../components/ChannelGrid";
+import Hint from "../components/Hint";
 import Icon from "../components/Icon";
 import { useToast } from "../components/Toast";
 import ImageCanvas from "../components/ImageCanvas";
@@ -22,7 +23,7 @@ const DEFAULTS: Form = {
 };
 
 const HINT: Record<Mode, string> = {
-  none: "Перетаскивайте точки мышью. Выберите инструмент, чтобы рисовать.",
+  none: "Перетаскивайте точки мышью. Выберите инструмент, чтобы рисовать. «Сбросить» в этом режиме очищает и зону, и линию.",
   zone: "Кликайте, чтобы добавить вершины зоны. Всё, что вне зоны, игнорируется.",
   line: "Поставьте две точки линии, которую пересекают по пути к двери.",
   door: "Кликните на стороне линии, где находится дверь.",
@@ -142,6 +143,21 @@ export default function CameraEdit() {
     } else if (mode === "door") setDir({ door_point: p });
   };
 
+  // одна кнопка «Сбросить» — по выбранному инструменту
+  const resetTarget = mode === "zone"
+    ? { enabled: !!f.zone, title: "Сбросить зону" }
+    : mode === "line" || mode === "door"
+      ? { enabled: !!f.direction, title: "Сбросить линию и точку двери" }
+      : { enabled: !!(f.zone || f.direction), title: "Сбросить зону, линию и точку двери" };
+  const resetDrawing = () => {
+    if (mode === "zone") set("zone", null);
+    else if (mode === "line" || mode === "door") set("direction", null);
+    else if (confirm("Сбросить и зону, и линию направления?")) {
+      set("zone", null);
+      set("direction", null);
+    }
+  };
+
   const toggleSpecies = (s: Species) =>
     set("species", f.species.includes(s) ? f.species.filter((x) => x !== s) : [...f.species, s]);
 
@@ -182,11 +198,12 @@ export default function CameraEdit() {
                     {{ none: "Указатель", zone: "Зона", line: "Линия", door: "Точка двери" }[m]}
                   </button>
                 ))}
+                <Hint>{HINT[mode]}</Hint>
                 <span style={{ flex: 1 }} />
-                <button className="ghost" onClick={() => set("zone", null)} disabled={!f.zone}><Icon path={mdiEraser} size={18} />Сбросить зону</button>
-                <button className="ghost" onClick={() => set("direction", null)} disabled={!f.direction}><Icon path={mdiEraser} size={18} />Сбросить линию</button>
+                <button className="ghost" onClick={resetDrawing} disabled={!resetTarget.enabled} title={resetTarget.title}>
+                  <Icon path={mdiEraser} size={18} />Сбросить
+                </button>
               </div>
-              <div className="small muted">{HINT[mode]}</div>
               {live ? (
                 <LiveView cameraId={+id!} />
               ) : snapError ? (
@@ -234,6 +251,11 @@ export default function CameraEdit() {
                 <button className={live ? "active" : ""} onClick={() => setLive(!live)}>
                   <Icon path={live ? mdiStop : mdiPlay} size={18} />{live ? "Остановить просмотр" : "Живой просмотр детекции"}
                 </button>
+                <Hint>
+                  Кадр примерно раз в секунду со всем, что видит модель. Цветные рамки идут в трекер; <b>OK</b> — подтверждённый
+                  трек (будет событие). Серые: <span className="mono">weak</span> — уверенность ниже порога кадра,{" "}
+                  <span className="mono">out-of-zone</span> — центр рамки вне зоны. Внизу кадра — есть ли движение и идёт ли анализ.
+                </Hint>
                 {!live && <button onClick={() => (setSnapVer(Date.now()), setSnapError(false), setDets(null))}><Icon path={mdiRefresh} size={18} />Обновить кадр</button>}
                 {!live && <button onClick={testDetect}><Icon path={mdiImageSearchOutline} size={18} />Тест детекции на кадре</button>}
                 {dets && <span className="small muted">{dets.length ? `найдено: ${dets.length}` : "ничего не найдено"}</span>}
@@ -245,11 +267,11 @@ export default function CameraEdit() {
         <div className="panel stack">
           <label className="field">Название<input value={f.name} onChange={(e) => { set("name", e.target.value); if (!slugTouched) set("slug", translit(e.target.value)); }} /></label>
           <label className="field">
-            Идентификатор (для сущностей HA)
+            <span className="label-text">Идентификатор<Hint>Латиница, цифры и «_». Из него строятся имена сущностей в Home Assistant, например binary_sensor.front_door_cat. Лучше не менять после подключения HA.</Hint></span>
             <input className="mono" value={f.slug} onChange={(e) => { setSlugTouched(true); set("slug", e.target.value); }} placeholder="front_door" />
           </label>
           <label className="field">
-            Регистратор
+            <span className="label-text">Источник<Hint>Канал регистратора или свой адрес: RTSP-поток любой камеры либо путь к видеофайлу (файл крутится по кругу — удобно для проверки).</Hint></span>
             <select value={f.source_url !== null ? "url" : f.nvr_id ?? ""} onChange={(e) => {
               if (e.target.value === "url") { set("source_url", ""); set("nvr_id", null); }
               else { set("source_url", null); set("nvr_id", +e.target.value); }
@@ -259,12 +281,12 @@ export default function CameraEdit() {
             </select>
           </label>
           {f.source_url !== null ? (
-            <label className="field">URL источника<input className="mono" value={f.source_url} onChange={(e) => set("source_url", e.target.value)} placeholder="rtsp://… или путь к видео" /></label>
+            <label className="field"><span className="label-text">URL источника<Hint>rtsp://логин:пароль@адрес/путь или путь к видеофайлу на компьютере, где работает сервис.</Hint></span><input className="mono" value={f.source_url} onChange={(e) => set("source_url", e.target.value)} placeholder="rtsp://… или путь к видео" /></label>
           ) : (
             <div className="form-grid">
-              <label className="field">Канал<input type="number" min={1} value={f.channel} onChange={num("channel")} /></label>
+              <label className="field"><span className="label-text">Канал<Hint>Номер канала как в интерфейсе регистратора, начиная с 1.</Hint></span><input type="number" min={1} value={f.channel} onChange={num("channel")} /></label>
               <label className="field">
-                Поток
+                <span className="label-text">Поток<Hint>Основной — полное разрешение, точнее распознавание, больше нагрузка. Дополнительный — уменьшенная копия: легче, но мелкие объекты модель может не увидеть.</Hint></span>
                 <select value={f.stream} onChange={(e) => set("stream", e.target.value as Form["stream"])}>
                   <option value="sub">дополнительный</option>
                   <option value="main">основной</option>
@@ -274,14 +296,14 @@ export default function CameraEdit() {
           )}
           <AspectField value={f.aspect} cameraId={isNew ? null : +id!} onChange={(v) => set("aspect", v)} />
           <label className="field">
-            Когда анализировать
+            <span className="label-text">Когда анализировать<Hint>По детекции движения — кадры анализируются, только пока регистратор сообщает о движении (плюс несколько секунд после). Постоянно — каждый кадр, больше нагрузка. Для своего URL анализ всегда постоянный.</Hint></span>
             <select value={f.trigger} onChange={(e) => set("trigger", e.target.value as Form["trigger"])} disabled={f.source_url !== null}>
               <option value="motion">по детекции движения регистратора</option>
               <option value="always">постоянно</option>
             </select>
           </label>
           <div className="row">
-            <span className="small muted">Искать:</span>
+            <span className="small muted label-text">Искать<Hint>Кого искать на этой камере. Для каждого вида появятся свои сенсоры и события в Home Assistant.</Hint></span>
             {(["cat", "dog", "person"] as Species[]).map((s) => (
               <label key={s} className="check">
                 <input type="checkbox" checked={f.species.includes(s)} onChange={() => toggleSpecies(s)} />{SPECIES_LABEL[s]}
@@ -291,19 +313,19 @@ export default function CameraEdit() {
           <details>
             <summary className="small">Параметры детекции</summary>
             <div className="form-grid" style={{ marginTop: 8 }}>
-              <label className="field">Кадров/сек<input type="number" step={0.5} value={f.fps} onChange={num("fps")} /></label>
-              <label className="field">Работать после движения, с<input type="number" value={f.linger} onChange={num("linger")} /></label>
-              <label className="field">Удерживать «есть», с<input type="number" value={f.clear_after} onChange={num("clear_after")} /></label>
-              <label className="field">Мин. уверенность кадра<input type="number" step={0.05} value={f.min_conf} onChange={num("min_conf")} /></label>
-              <label className="field">Кадров для подтверждения<input type="number" value={f.confirm_hits} onChange={num("confirm_hits")} /></label>
-              <label className="field">Уверенность подтверждения<input type="number" step={0.05} value={f.confirm_conf} onChange={num("confirm_conf")} /></label>
-              <label className="field">Порог узнавания объекта<input type="number" step={0.05} value={f.identity_conf} onChange={num("identity_conf")} /></label>
+              <label className="field"><span className="label-text">Кадров/сек<Hint>Сколько кадров в секунду анализировать во время движения. 3–5 обычно достаточно; больше — точнее направление, но выше нагрузка.</Hint></span><input type="number" step={0.5} value={f.fps} onChange={num("fps")} /></label>
+              <label className="field"><span className="label-text">Работать после движения, с<Hint>Сколько секунд продолжать анализ после того, как регистратор сообщил об окончании движения.</Hint></span><input type="number" value={f.linger} onChange={num("linger")} /></label>
+              <label className="field"><span className="label-text">Удерживать «есть», с<Hint>Сколько секунд сенсор «в кадре» остаётся включённым после того, как объект пропал. Защищает от мигания сенсора.</Hint></span><input type="number" value={f.clear_after} onChange={num("clear_after")} /></label>
+              <label className="field"><span className="label-text">Мин. уверенность кадра<Hint>Детекции слабее этого порога отбрасываются сразу. Ниже — больше находок и больше ложных срабатываний.</Hint></span><input type="number" step={0.05} value={f.min_conf} onChange={num("min_conf")} /></label>
+              <label className="field"><span className="label-text">Кадров для подтверждения<Hint>Сколько кадров подряд объект должен быть найден, чтобы появилось событие.</Hint></span><input type="number" value={f.confirm_hits} onChange={num("confirm_hits")} /></label>
+              <label className="field"><span className="label-text">Уверенность подтверждения<Hint>Средняя уверенность по этим кадрам, нужная для события. Ночью в ИК уверенность ниже — можно снизить до 0.4.</Hint></span><input type="number" step={0.05} value={f.confirm_conf} onChange={num("confirm_conf")} /></label>
+              <label className="field"><span className="label-text">Порог узнавания объекта<Hint>Насколько классификатор должен быть уверен, чтобы назвать объект по имени («Барсик»). Ниже порога — «не узнан».</Hint></span><input type="number" step={0.05} value={f.identity_conf} onChange={num("identity_conf")} /></label>
               {f.direction && (
-                <label className="field">Мёртвая зона у линии<input type="number" step={0.01} value={f.direction.margin} onChange={(e) => setDir({ margin: +e.target.value })} /></label>
+                <label className="field"><span className="label-text">Мёртвая зона у линии<Hint>Полоса вдоль линии (доля кадра), внутри которой сторона не определяется — чтобы дрожание рамки не давало ложных «пришёл/ушёл».</Hint></span><input type="number" step={0.01} value={f.direction.margin} onChange={(e) => setDir({ margin: +e.target.value })} /></label>
               )}
             </div>
           </details>
-          <label className="check"><input type="checkbox" checked={f.save_frames} onChange={(e) => set("save_frames", e.target.checked)} />Сохранять кадры с найденными объектами для разметки</label>
+          <label className="check"><input type="checkbox" checked={f.save_frames} onChange={(e) => set("save_frames", e.target.checked)} />Сохранять снимки для объектов<Hint>Найденные животные и люди автоматически попадают в «Неразобранные» раздела «Объекты» для обучения.</Hint></label>
           <label className="check"><input type="checkbox" checked={f.enabled} onChange={(e) => set("enabled", e.target.checked)} />Камера включена</label>
         </div>
       </div>
@@ -349,11 +371,6 @@ function LiveView({ cameraId }: { cameraId: number }) {
       {error && <div className="error">Нет кадра: камера выключена, поток недоступен или модель ещё загружается. Повторяю…</div>}
       <img className="full-image" src={src} style={{ maxHeight: "70vh", margin: 0 }} alt=""
         onLoad={() => (setError(false), next(700))} onError={() => (setError(true), next(3000))} />
-      <div className="small muted">
-        Цветные рамки — детекции, которые идут в трекер; <b>OK</b> — подтверждённый трек (будет событие).
-        Серые: <span className="mono">weak</span> — уверенность ниже порога кадра,{" "}
-        <span className="mono">out-of-zone</span> — центр рамки вне зоны. Внизу видно, есть ли движение и идёт ли анализ.
-      </div>
     </div>
   );
 }
@@ -375,7 +392,7 @@ function AspectField({ value, cameraId, onChange }: { value: string | null; came
   return (
     <div className="stack" style={{ gap: 6 }}>
       <label className="field">
-        Пропорции кадра
+        <span className="label-text">Пропорции кадра<Hint>Если на картинке всё сплющено или вытянуто (круглое выглядит овальным), выберите пропорции, при которых кадр выглядит естественно. Влияет на превью, снимки событий и распознавание; зона и линия не сдвигаются.</Hint></span>
         <select value={customMode ? "custom" : value ?? ""} onChange={(e) => {
           const v = e.target.value;
           if (v === "custom") { setCustomMode(true); return; }
@@ -390,10 +407,6 @@ function AspectField({ value, cameraId, onChange }: { value: string | null; came
       {customMode && (
         <input className="mono" placeholder="например 5:4" value={value ?? ""} onChange={(e) => onChange(e.target.value || null)} />
       )}
-      <div className="small muted">
-        Если на картинке всё сплющено или вытянуто (круглое выглядит овальным), выберите пропорции, при которых кадр выглядит естественно.
-        Влияет на превью, снимки событий и распознавание; зона и линия не сдвигаются.
-      </div>
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { mdiCheckCircleOutline, mdiContentSaveOutline, mdiDeleteOutline, mdiLanConnect, mdiPencilOutline, mdiPlus, mdiRefresh } from "@mdi/js";
 import { Camera, Nvr, api } from "../api";
+import Hint from "../components/Hint";
 import Icon from "../components/Icon";
 import { useToast } from "../components/Toast";
 import ChannelGrid from "../components/ChannelGrid";
@@ -91,7 +92,7 @@ export default function Nvrs() {
                   {p.channels && p.channels.length > 0 ? (
                     <>
                       <div className="row between">
-                        <span className="small muted">Каналы ({p.channels.length}). Нажмите на превью, чтобы увеличить.</span>
+                        <span className="small muted label-text">Каналы ({p.channels.length})<Hint>Нажмите на превью, чтобы увеличить. «Добавить» создаёт камеру для этого канала.</Hint></span>
                         <button className="small" onClick={() => setSnapVer(Date.now())}><Icon path={mdiRefresh} size={16} />Обновить превью</button>
                       </div>
                       <ChannelGrid nvrId={n.id} channels={p.channels} cameras={cams ?? []} version={snapVer}
@@ -157,25 +158,22 @@ function NvrForm({ initial, onClose, onSaved }: { initial: { id: number | null; 
       <div className="stack">
         <div className="form-grid">
           <label className="field">Название<input value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="Дом" /></label>
-          <label className="field">Адрес (IP или имя)<input value={f.host} onChange={(e) => set("host", e.target.value)} placeholder="192.168.1.50" /></label>
-          <label className="field">HTTP-порт<input type="number" value={f.http_port} onChange={(e) => set("http_port", +e.target.value)} /></label>
-          <label className="field">RTSP-порт<input type="number" value={f.rtsp_port} onChange={(e) => set("rtsp_port", +e.target.value)} /></label>
+          <label className="field"><span className="label-text">Адрес<Hint>IP-адрес или имя регистратора в локальной сети, например 192.168.1.50.</Hint></span><input value={f.host} onChange={(e) => set("host", e.target.value)} placeholder="192.168.1.50" /></label>
+          <label className="field"><span className="label-text">HTTP-порт<Hint>Порт веб-интерфейса регистратора (обычно 80). Через него идут проверка связи, снимки каналов и события движения.</Hint></span><input type="number" value={f.http_port} onChange={(e) => set("http_port", +e.target.value)} /></label>
+          <label className="field"><span className="label-text">RTSP-порт<Hint>Порт видеопотока (обычно 554).</Hint></span><input type="number" value={f.rtsp_port} onChange={(e) => set("rtsp_port", +e.target.value)} /></label>
           <label className="field">Логин<input value={f.username} onChange={(e) => set("username", e.target.value)} autoComplete="off" /></label>
           <label className="field">
-            Пароль{initial.id ? " (пусто — не менять)" : ""}
+            <span className="label-text">Пароль<Hint>Лучше завести на регистраторе отдельного пользователя с правами только на просмотр. Пароль хранится в базе сервиса.{initial.id && " Оставьте поле пустым, чтобы не менять сохранённый пароль."}</Hint></span>
             <input type="password" value={f.password} onChange={(e) => set("password", e.target.value)} autoComplete="new-password" />
           </label>
           <label className="field">
-            Коды событий движения
+            <span className="label-text">Коды событий движения<Hint>Какие события регистратора запускают анализ, через запятую. Обычно VideoMotion; для «умного» обнаружения — SmartMotionHuman, SmartMotionVehicle.</Hint></span>
             <input value={f.event_codes.join(",")} onChange={(e) => set("event_codes", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
           </label>
         </div>
         <div className="row">
-          <label className="check"><input type="checkbox" checked={f.https} onChange={(e) => set("https", e.target.checked)} />HTTPS</label>
+          <label className="check"><input type="checkbox" checked={f.https} onChange={(e) => set("https", e.target.checked)} />HTTPS<Hint>Включите, если веб-интерфейс регистратора открывается по https://.</Hint></label>
           <label className="check"><input type="checkbox" checked={f.enabled} onChange={(e) => set("enabled", e.target.checked)} />Включён</label>
-        </div>
-        <div className="small muted">
-          Рекомендуется завести на регистраторе отдельного пользователя с правами только на просмотр. Пароль хранится в базе сервиса вне Яндекс Диска.
         </div>
         {probe && (probe.ok ? <div className="notice"><Icon path={mdiCheckCircleOutline} size={18} />{probe.device_type}, каналов: {probe.channels?.length ?? "?"}</div> : <div className="error">{probe.error}</div>)}
         {error && <div className="error">{error}</div>}

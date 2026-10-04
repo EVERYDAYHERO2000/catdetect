@@ -202,3 +202,36 @@ def test_camera_aspect_validation(authed):
     assert authed.post("/api/cameras", json={**base, "slug": "a2", "aspect": ""}).json()["aspect"] is None
     assert authed.post("/api/cameras", json={**base, "slug": "a3", "aspect": "4/3"}).json()["aspect"] == "4:3"
     assert authed.post("/api/cameras", json={**base, "slug": "a4", "aspect": "wide"}).status_code == 422
+
+
+def test_images_follow_camera_aspect(authed, app):
+    import cv2
+    import numpy as np
+
+    from catdetect.annotate import to_jpeg
+
+    n = authed.post("/api/nvrs", json={"name": "N", "host": "127.0.0.1"}).json()
+    cam = authed.post("/api/cameras", json={"slug": "door", "name": "Д", "nvr_id": n["id"], "channel": 1}).json()
+    rec = app.state.runtime.recorder
+    portrait = np.zeros((1616, 1440, 3), np.uint8)  # снято до выбора пропорций
+    ev = rec.save_event(cam["id"], "seen", "cat", None, 0.9, None, 1, to_jpeg(portrait), None, raw=portrait,
+                        predictions=[{"box": [0.1, 0.1, 0.5, 0.5], "species": "cat", "conf": 0.9, "identity_id": None}])
+    shape = lambda r: cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_COLOR).shape[:2]
+    assert shape(authed.get(f"/api/events/{ev['id']}/image")) == (1616, 1440)  # пропорции не заданы — как есть
+
+    authed.put(f"/api/cameras/{cam['id']}", json={**{k: v for k, v in cam.items() if k != "id"}, "aspect": "4:3"})
+    assert shape(authed.get(f"/api/events/{ev['id']}/image")) == (1080, 1440)
+    image_id = authed.post(f"/api/events/{ev['id']}/label").json()["image_id"]
+    assert shape(authed.get(f"/api/images/{image_id}/file")) == (1080, 1440)
+    crop_id = authed.get("/api/objects/crops?folder=pending").json()["items"][0]["id"]
+    h, w = shape(authed.get(f"/api/identities/crops/{crop_id}"))
+    assert abs(w / h - (0.4 * 1440) / (0.4 * 1080)) < 0.05  # вырезка тоже в пропорциях камеры
+
+
+def test_overview(authed):
+    r = authed.get("/api/overview")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert set(d) == {"cameras", "nvrs", "objects", "events", "training", "system"}
+    assert d["system"]["mem_total"] > 0 and 0 <= d["system"]["cpu_percent"] <= 100
+    assert d["cameras"]["total"] == 0 and d["training"]["jobs"] == 0

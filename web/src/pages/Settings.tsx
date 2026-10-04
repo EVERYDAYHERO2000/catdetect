@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { mdiAccountCogOutline, mdiBrain, mdiContentCopy, mdiHomeAssistant, mdiKeyPlus, mdiKeyRemove, mdiLockReset } from "@mdi/js";
+import Hint from "../components/Hint";
 import Icon from "../components/Icon";
 import ModelsPanel from "../components/ModelsPanel";
 import { useToast } from "../components/Toast";
@@ -39,19 +40,19 @@ function ComputePanel() {
   if (!data) return null;
   const gpu = data.available.gpu;
   const options: [ComputeInfo["preference"], string, string][] = [
-    ["auto", "Автоматически", gpu ? `видеокарта: ${gpu}` : "видеокарты нет — процессор"],
-    ["cpu", "Процессор", "OpenVINO; видеокарта не нужна"],
-    ["gpu", "Видеокарта", gpu ?? "недоступна на этом компьютере"],
+    ["auto", "Автоматически", gpu ? `Сейчас будет использована видеокарта: ${gpu}.` : "Видеокарты нет — будет использован процессор."],
+    ["cpu", "Процессор", "Через OpenVINO, видеокарта не нужна. Медленнее видеокарты, но обычно достаточно."],
+    ["gpu", "Видеокарта", gpu ? `${gpu}. Быстрее всего.` : "Недоступна на этом компьютере."],
   ];
   return (
     <div className="panel stack" style={{ maxWidth: 560 }}>
-      <h2>Вычисления</h2>
+      <h2 className="label-text">Вычисления<Hint>Чем считать распознавание и обучение моделей. Переключение занимает несколько секунд — модель перезагружается.</Hint></h2>
       <div className="stack" style={{ gap: 6 }}>
         {options.map(([value, title, hint]) => (
           <label key={value} className="check">
             <input type="radio" name="compute" checked={data.preference === value} disabled={busy || (value === "gpu" && !gpu)}
               onChange={() => choose(value)} />
-            <b>{title}</b> <span className="small muted">{hint}</span>
+            <b>{title}</b><Hint>{hint}</Hint>
           </label>
         ))}
       </div>
@@ -59,7 +60,6 @@ function ComputePanel() {
         Сейчас: {data.detector.status === "loading" ? "модель загружается…" : data.detector.status === "error" ? <span className="error">{data.detector.error}</span>
           : <>{data.active?.label ?? "—"}{data.detector.avg_ms ? ` · ${Math.round(data.detector.avg_ms)} мс на кадр` : ""}</>}
       </div>
-      <div className="small muted">Настройка действует и на распознавание, и на обучение моделей.</div>
     </div>
   );
 }

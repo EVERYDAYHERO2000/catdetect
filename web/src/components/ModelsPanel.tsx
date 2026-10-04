@@ -1,6 +1,6 @@
-import { Link } from "react-router-dom";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { mdiCheckDecagramOutline, mdiCloseCircleOutline, mdiDeleteOutline, mdiPowerStandby, mdiSchool, mdiTextBoxOutline } from "@mdi/js";
+import Hint from "./Hint";
 import Icon from "./Icon";
 import { useToast } from "./Toast";
 import { Identity, MlModel, TrainingJob, api, fmtTime } from "../api";
@@ -102,11 +102,10 @@ export default function ModelsPanel() {
       {error && <div className="error mb">{error}</div>}
       <div className="grid mb">
         <div className="panel stack">
-          <h2>{KIND.classifier}</h2>
-          <div className="small muted">
-            Учится по снимкам из папок раздела <Link to="/objects">«Объекты»</Link> и после этого подписывает события именами:
-            «Барсик пришёл». Нужно хотя бы 2 папки по 5 снимков; хорошо — по 30–50, днём и ночью.
-          </div>
+          <h2 className="label-text">{KIND.classifier}<Hint>
+            Учится по снимкам из папок раздела «Объекты» и после этого подписывает события именами: «Барсик пришёл».
+            Нужно хотя бы 2 папки по 5 снимков; хорошо — по 30–50, днём и ночью.
+          </Hint></h2>
           <div className="small">
             {identities?.map((i) => (
               <span key={i.id} className={`badge ${(stats?.by_identity[i.id] ?? 0) >= 5 ? "ok" : ""}`} style={{ marginRight: 4 }}>
@@ -116,22 +115,21 @@ export default function ModelsPanel() {
             {!identities?.length && <span className="muted">папок пока нет</span>}
           </div>
           <div className="row">
-            <label className="field" style={{ width: 100 }}>Эпох<input type="number" value={epochs.classifier} onChange={(e) => setEpochs({ ...epochs, classifier: +e.target.value })} /></label>
+            <label className="field" style={{ width: 100 }}><span className="label-text">Эпох<Hint>Сколько проходов по всем снимкам сделать при обучении. Больше — дольше, но обычно точнее; обучение само остановится раньше, если улучшений нет.</Hint></span><input type="number" value={epochs.classifier} onChange={(e) => setEpochs({ ...epochs, classifier: +e.target.value })} /></label>
             <button className="primary" style={{ alignSelf: "flex-end" }} disabled={!!running || identReady < 2} onClick={() => start("classifier")}><Icon path={mdiSchool} size={18} />Обучить узнавание</button>
           </div>
         </div>
         <div className="panel stack">
-          <h2>{KIND.detector}</h2>
-          <div className="small muted">
-            Дополнительно. Нужно, если стандартная модель пропускает животных или людей на ваших камерах (например, при
-            виде сверху) или путает их с фоном. Учится на кадрах, где все объекты разложены, включая «Не объект».
-            Нужно хотя бы 10 кадров, хорошо — 200 и больше.
-          </div>
+          <h2 className="label-text">{KIND.detector}<Hint>
+            Дополнительно. Нужно, если стандартная модель пропускает животных или людей на ваших камерах (например, при виде
+            сверху) или путает их с фоном. Учится на кадрах, где все объекты разложены, включая «Не объект». Нужно хотя бы
+            10 кадров, хорошо — 200 и больше. На процессоре обучение может занять часы.
+          </Hint></h2>
           <div className="small">
             Готово кадров: <b>{labeled}</b> · кошек: <b>{stats?.by_species.cat ?? 0}</b> · собак: <b>{stats?.by_species.dog ?? 0}</b> · людей: <b>{stats?.by_species.person ?? 0}</b>
           </div>
           <div className="row">
-            <label className="field" style={{ width: 100 }}>Эпох<input type="number" value={epochs.detector} onChange={(e) => setEpochs({ ...epochs, detector: +e.target.value })} /></label>
+            <label className="field" style={{ width: 100 }}><span className="label-text">Эпох<Hint>Сколько проходов по всем снимкам сделать при обучении. Больше — дольше, но обычно точнее; обучение само остановится раньше, если улучшений нет.</Hint></span><input type="number" value={epochs.detector} onChange={(e) => setEpochs({ ...epochs, detector: +e.target.value })} /></label>
             <button className="primary" style={{ alignSelf: "flex-end" }} disabled={!!running || labeled < 10} onClick={() => start("detector")}><Icon path={mdiSchool} size={18} />Обучить поиск</button>
           </div>
         </div>

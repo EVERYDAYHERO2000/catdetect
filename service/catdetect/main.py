@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
-from .api import auth, cameras, events, identities, images, nvrs, objects, system, training
+from .api import auth, cameras, events, identities, images, nvrs, objects, overview, system, training
 from .auth import SessionSigner
 from .db import make_engine
 from .events import EventBus
@@ -47,7 +47,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.training = trainer
     app.state.signer = SessionSigner(settings.secret_key)
 
-    for r in (auth, nvrs, cameras, identities, images, events, training, system, objects):
+    for r in (auth, nvrs, cameras, identities, images, events, training, system, objects, overview):
         app.include_router(r.router)
 
     @app.get("/api/health")

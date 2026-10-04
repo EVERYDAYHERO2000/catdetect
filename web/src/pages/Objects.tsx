@@ -7,6 +7,7 @@ import {
 } from "@mdi/js";
 import { ReactNode } from "react";
 import FolderForm, { FolderFields } from "../components/FolderForm";
+import Hint from "../components/Hint";
 import Icon from "../components/Icon";
 import SpeciesIcon from "../components/SpeciesIcon";
 import { useToast } from "../components/Toast";
@@ -263,20 +264,31 @@ export default function Objects() {
                     : folder === "rejected" ? <><Icon path={mdiImageRemove} />Не объект</>
                     : current ? <><SpeciesIcon species={current.species} size={20} />{current.name}</> : "Папка"}
                   <span className="muted" style={{ fontWeight: 400 }}>· {total}</span>
+                  <Hint>
+                    {folder === "pending" && "Сюда попадают все, кого нашла модель. Выделите снимки и переложите в папку: кнопками, перетаскиванием на папку слева или клавишами."}
+                    {folder === "rejected" && "Ошибки модели: тени, коврики, пакеты. Эти снимки учат детектор не путать их с животными и людьми."}
+                    {current && `Для обучения узнавания нужно хотя бы ${t?.min_samples ?? 5} снимков в папке, лучше 30 и больше — днём и ночью.`}
+                  </Hint>
                 </h2>
-                <div className="small muted">
-                  {folder === "pending" && "Сюда попадают все, кого нашла модель. Выделите снимки и переложите в папку: кнопками ниже, перетаскиванием или клавишами."}
-                  {folder === "rejected" && "Ошибки модели: тени, коврики, пакеты. Эти снимки учат детектор не путать их с животными и людьми."}
-                  {current && `${SPECIES_LABEL[current.species]}${current.is_own ? "" : ", чужие"}${current.notes ? ` · ${current.notes}` : ""}` +
-                    (current.count < (t?.min_samples ?? 5) ? ` · для обучения нужно хотя бы ${t?.min_samples ?? 5} снимков, лучше 30+` : "")}
-                </div>
+                {current && (
+                  <div className="small muted">
+                    {SPECIES_LABEL[current.species]}{current.is_own ? "" : ", чужие"}{current.notes ? ` · ${current.notes}` : ""}
+                  </div>
+                )}
               </div>
+              <div className="row">
+                <span className="small muted label-text">Клавиши<Hint>
+                  <span className="kbd">1</span>…<span className="kbd">9</span> — в папку по порядку, <span className="kbd">X</span> — не объект,{" "}
+                  <span className="kbd">U</span> — в неразобранные, <span className="kbd">Enter</span> — принять подсказки,{" "}
+                  <span className="kbd">⌘A</span> — выделить все, Shift+клик — диапазон. Двойной клик открывает кадр целиком, там можно поправить рамку.
+                </Hint></span>
               {current && (
                 <div className="row">
                   <button className="small" onClick={() => setEdit({ id: current.id, form: { name: current.name, species: current.species, is_own: current.is_own, notes: current.notes } })}><Icon path={mdiPencilOutline} size={16} />Изменить</button>
                   <button className="small danger" onClick={() => removeFolder(current)}><Icon path={mdiDeleteOutline} size={16} />Удалить папку</button>
                 </div>
               )}
+              </div>
             </div>
             {folder === "pending" && summary && summary.empty_frames > 0 && summary.first_empty_frame_id && (
               <div className="small">
@@ -333,11 +345,6 @@ export default function Objects() {
             </div>
           )}
           {crops.length < total && <button onClick={() => loadCrops(true)}>Показать ещё ({total - crops.length})</button>}
-          <div className="small muted">
-            Клавиши: <span className="kbd">1</span>…<span className="kbd">9</span> — в папку по порядку, <span className="kbd">X</span> — не объект,{" "}
-            <span className="kbd">U</span> — в неразобранные, <span className="kbd">Enter</span> — принять подсказки,{" "}
-            <span className="kbd">⌘A</span> — выделить все. Двойной клик открывает кадр целиком, там можно поправить рамку.
-          </div>
         </div>
       </div>
 

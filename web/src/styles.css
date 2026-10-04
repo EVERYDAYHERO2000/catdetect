@@ -151,7 +151,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--neutral) 50%, transpare
 .login-logo h1 { margin: 0; font-size: 28px; }
 
 /* ---- картинки ---- */
-.thumb { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; border-radius: 10px; background: var(--base-300); display: block; }
+.thumb { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; border-radius: 10px; display: block; }
 .thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr)); gap: 10px; }
 .thumbs .item { position: relative; cursor: pointer; border-radius: 12px; overflow: hidden; border: 2px solid transparent; }
 .thumbs .item.selected { border-color: var(--accent); }
@@ -171,8 +171,9 @@ tbody tr:hover td { background: color-mix(in srgb, var(--neutral) 50%, transpare
 
 .feed { display: flex; flex-direction: column; gap: 10px; }
 .feed .ev { display: flex; gap: 12px; align-items: center; }
-/* превью события: фиксированная высота, ширина — по пропорциям снимка (вертикальные не сжимаются в полоску) */
-.ev-thumb, .feed .ev img { height: 64px; width: auto; max-width: 112px; min-width: 40px; object-fit: contain; border-radius: 8px; display: block; flex-shrink: 0; }
+/* превью события: снимок целиком вписан в рамку 96×72 с сохранением пропорций (их задаёт камера), без полей */
+.thumb-box { width: 96px; height: 72px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.thumb-box img { max-width: 100%; max-height: 100%; width: auto; height: auto; min-width: 8px; min-height: 8px; border-radius: 8px; display: block; }
 
 .label-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
 .kbd { font-family: ui-monospace, monospace; font-size: 11px; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; color: var(--text); background: var(--base-300); }
@@ -242,4 +243,37 @@ pre.log { max-height: 260px; overflow: auto; font-size: 11px; background: var(--
   .sidebar a, .sidebar .side-btn { justify-content: center; width: auto; padding: 10px; }
   .main { padding: 18px 14px 96px; }
   .toasts { bottom: 90px; right: 10px; left: 10px; }
+}
+
+/* ---- «Обзор»: карточки-тизеры разделов ---- */
+.teasers { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+a.teaser { display: flex; flex-direction: column; gap: 10px; color: var(--text); transition: border-color 0.12s, transform 0.12s; }
+a.teaser:hover { border-color: var(--border-strong); color: var(--text); }
+a.teaser:hover .teaser-go { color: var(--accent); transform: translateX(2px); }
+.teaser-head { display: flex; align-items: center; gap: 10px; }
+.teaser-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent); }
+.teaser-title { flex: 1; font-weight: 500; color: var(--text-strong); }
+.teaser-go { color: var(--muted); transition: transform 0.12s, color 0.12s; }
+.teaser-value { font-size: 32px; font-weight: 700; color: var(--text-strong); line-height: 1.1; }
+.teaser-unit { font-size: 14px; font-weight: 400; color: var(--muted); margin-left: 6px; }
+.teaser-body { display: flex; flex-direction: column; gap: 8px; }
+.teaser-list { display: flex; flex-direction: column; gap: 4px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
+.dot.ok { background: var(--ok); }
+.dot.danger { background: var(--danger-strong); }
+.warn-text { color: var(--warn); }
+.meter { display: flex; flex-direction: column; gap: 4px; }
+.progress.warn > div { background: var(--warn); }
+.progress.danger > div { background: var(--danger-strong); }
+@media (max-width: 1000px) { .grid .panel[style*="span 2"] { grid-column: auto !important; } }
+
+/* ---- подсказки «?» ---- */
+.label-text { display: inline-flex; align-items: center; gap: 5px; }
+.hint { position: relative; display: inline-flex; align-items: center; color: var(--muted); cursor: help; outline: none; vertical-align: middle; }
+.hint:hover, .hint:focus-visible { color: var(--accent); }
+.hint-bubble {
+  position: fixed; padding: 9px 11px; border-radius: 10px;
+  background: var(--neutral); border: 1px solid var(--border-strong); color: var(--text-strong);
+  font-size: 12px; font-weight: 400; line-height: 1.45; text-transform: none; letter-spacing: normal; white-space: normal; text-align: left;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); pointer-events: none; z-index: 60; animation: toast-in 0.12s ease-out;
 }

@@ -37,7 +37,7 @@ export default function Events() {
   const toLabeling = async (e: EventItem) => {
     try {
       await api<{ image_id: number }>(`/api/events/${e.id}/label`, { method: "POST" });
-      if (!e.image_id) toast.success("Кадр события добавлен в «Неразобранные»");
+      toast.success("Кадр события добавлен в «Неразобранные»");
       navigate("/objects?folder=pending");
     } catch (err) {
       toast.error((err as Error).message);
@@ -87,7 +87,7 @@ export default function Events() {
               const d = describeEvent(e, identName(e.identity_id));
               return (
                 <tr key={e.id} onClick={() => e.has_snapshot && setOpen(e)} style={{ cursor: e.has_snapshot ? "pointer" : undefined }}>
-                  <td style={{ width: 120 }}>{e.has_snapshot && <img className="ev-thumb" src={eventImage(e)} loading="lazy" alt="" />}</td>
+                  <td style={{ width: 112 }}><div className="thumb-box">{e.has_snapshot && <img src={eventImage(e, 240)} loading="lazy" alt="" />}</div></td>
                   <td className="small">{fmtTime(e.ts)}</td>
                   <td>{camName(e.camera_id)}</td>
                   <td>
@@ -100,10 +100,10 @@ export default function Events() {
                     {e.identity_confidence !== null && ` · узнан ${Math.round(e.identity_confidence * 100)}%`}
                   </td>
                   <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                    {e.has_raw && (
+                    {e.has_raw && !e.image_id && (
                       <button className="small" title="Добавить найденных на кадре в «Неразобранные» раздела «Объекты»"
                         onClick={(ev) => (ev.stopPropagation(), toLabeling(e))}>
-                        <Icon path={e.image_id ? mdiFolderOutline : mdiFolderArrowRightOutline} size={14} />{e.image_id ? "В объектах" : "В объекты"}
+                        <Icon path={mdiFolderArrowRightOutline} size={14} />В объекты
                       </button>
                     )}
                   </td>
@@ -120,9 +120,11 @@ export default function Events() {
           <img className="full-image" src={eventImage(open)} alt="" />
           {describeEvent(open).note && <div className="small muted" style={{ marginTop: 8 }}>{describeEvent(open).note}</div>}
           <div className="row" style={{ marginTop: 12 }}>
-            {open.has_raw ? (
+            {open.image_id ? (
+              <span className="small muted row"><Icon path={mdiFolderOutline} size={16} />Кадр уже добавлен в «Объекты»</span>
+            ) : open.has_raw ? (
               <button className="primary" onClick={() => toLabeling(open)}>
-                <Icon path={open.image_id ? mdiFolderOutline : mdiFolderArrowRightOutline} size={18} />{open.image_id ? "Открыть в объектах" : "Добавить в объекты"}
+                <Icon path={mdiFolderArrowRightOutline} size={18} />Добавить в объекты
               </button>
             ) : (
               <span className="small muted">Для этого события нет исходного кадра (оно записано до появления функции).</span>
