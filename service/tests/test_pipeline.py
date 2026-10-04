@@ -99,3 +99,38 @@ def test_identity_species_must_match_track():
     for i in range(1, 4):
         w.process(frame, float(i))
     assert t.identity(0.5)[0] == 6
+
+
+def test_stream_opened_only_on_motion(monkeypatch):
+    import catdetect.pipeline as pl
+
+    opened = []
+
+    class FakeReader:
+        def __init__(self, url, name, stop, aspect):
+            self.stop, self.connected, self.native_size = stop, True, (640, 480)
+            opened.append(self)
+
+        def start(self):
+            pass
+
+        def latest(self):
+            return None, 0, 0.0
+
+    monkeypatch.setattr(pl, "StreamReader", FakeReader)
+    rt = FakeRuntime([])
+    w = CameraWorker(spec(keep_stream=False), rt)
+    assert not w.keep_stream
+    w._manage_stream(0.0, active=False)
+    assert w.reader is None and opened == []  # без движения поток не открыт
+    w._manage_stream(1.0, active=True)
+    assert w.reader is not None and len(opened) == 1
+    w._manage_stream(2.0, active=False)  # движение кончилось — ждём простоя
+    assert w.reader is not None
+    w._manage_stream(2.0 + pl.STREAM_IDLE_CLOSE + 1, active=False)
+    assert w.reader is None and opened[0].stop.is_set()
+    assert w._stream_online(100.0) is True  # закрыт намеренно — не «нет потока»
+
+    always = CameraWorker(spec(), rt)  # по умолчанию поток держится всегда
+    always._manage_stream(0.0, active=False)
+    assert always.reader is not None

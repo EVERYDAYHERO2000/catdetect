@@ -48,6 +48,7 @@ class CameraIn(BaseModel):
     confirm_conf: float = Field(0.5, gt=0, lt=1)
     identity_conf: float = Field(0.6, gt=0, lt=1)
     save_frames: bool = True
+    keep_stream: bool = True
     aspect: str | None = Field(None, pattern=r"^\d{1,4}(\.\d{1,3})?:\d{1,4}(\.\d{1,3})?$")
     enabled: bool = True
 
@@ -181,7 +182,7 @@ async def stream_info(camera_id: int, _: Auth, db: Db, rt: Rt):
     if c is None:
         raise not_found("Камера")
     w = rt.worker(camera_id)
-    native = w.reader.native_size if w is not None else None
+    native = w.reader.native_size if w is not None and w.reader is not None else None
     if native is None:
         url = camera_url(c, db.get(Nvr, c.nvr_id) if c.nvr_id else None)
         frame = await run_in_threadpool(grab_frame, url) if url else None

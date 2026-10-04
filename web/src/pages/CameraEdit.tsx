@@ -19,7 +19,7 @@ type Handle = { kind: "zone"; i: number } | { kind: "line"; i: 0 | 1 } | { kind:
 const DEFAULTS: Form = {
   slug: "", name: "", nvr_id: null, channel: 1, stream: "sub", source_url: null, trigger: "motion", fps: 5, linger: 10,
   clear_after: 10, species: ["cat", "dog"], zone: null, direction: null, min_conf: 0.25, confirm_hits: 3,
-  confirm_conf: 0.5, identity_conf: 0.6, save_frames: true, enabled: true, aspect: null,
+  confirm_conf: 0.5, identity_conf: 0.6, save_frames: true, enabled: true, aspect: null, keep_stream: true,
 };
 
 const HINT: Record<Mode, string> = {
@@ -302,6 +302,20 @@ export default function CameraEdit() {
               <option value="always">постоянно</option>
             </select>
           </label>
+          {f.source_url === null && f.trigger === "motion" && (
+            <label className="field">
+              <span className="label-text">Видеопоток<Hint>
+                Держать открытым — кадр готов в момент движения, но поток с регистратора идёт постоянно
+                (обычно 0.5–4 Мбит/с на камеру внутри домашней сети). Только при движении — трафика почти нет,
+                но первые 1–3 секунды после начала движения уходят на подключение к потоку: быстро пробежавшее
+                животное можно пропустить. Поток закрывается через 10 секунд после окончания анализа.
+              </Hint></span>
+              <select value={f.keep_stream ? "always" : "motion"} onChange={(e) => set("keep_stream", e.target.value === "always")}>
+                <option value="always">держать открытым всегда</option>
+                <option value="motion">открывать только при движении</option>
+              </select>
+            </label>
+          )}
           <div className="row">
             <span className="small muted label-text">Искать<Hint>Кого искать на этой камере. Для каждого вида появятся свои сенсоры и события в Home Assistant.</Hint></span>
             {(["cat", "dog", "person"] as Species[]).map((s) => (

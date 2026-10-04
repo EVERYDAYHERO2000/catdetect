@@ -81,6 +81,7 @@ class Camera(SQLModel, table=True):
     identity_conf: float = 0.6  # порог распознавания конкретного животного
     save_frames: bool = True  # сохранять кадры с детекциями в очередь разметки
     aspect: Optional[str] = None  # пропорции кадра «16:9», «4:3»…; None — как в потоке
+    keep_stream: Optional[bool] = True  # False — открывать RTSP только при движении
     enabled: bool = True
 
 

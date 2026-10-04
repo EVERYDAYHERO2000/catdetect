@@ -44,6 +44,7 @@ export interface Camera {
   identity_conf: number;
   save_frames: boolean;
   aspect: string | null;
+  keep_stream: boolean;
   enabled: boolean;
 }
 

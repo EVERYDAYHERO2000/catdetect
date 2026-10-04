@@ -48,7 +48,7 @@ def camera_spec(cam: Camera, nvr: Nvr | None) -> CameraSpec | None:
         zone=tuple(tuple(p) for p in cam.zone) if cam.zone and len(cam.zone) >= 3 else None,
         direction=cam.direction or None, min_conf=cam.min_conf, confirm_hits=cam.confirm_hits,
         confirm_conf=cam.confirm_conf, identity_conf=cam.identity_conf, save_frames=cam.save_frames,
-        aspect=cam.aspect,
+        aspect=cam.aspect, keep_stream=cam.keep_stream is not False,
     )
 
 
@@ -227,6 +227,8 @@ class Runtime:
     def latest_frame(self, camera_id: int) -> np.ndarray | None:
         w = self._workers.get(camera_id)
         if w is None:
+            return None
+        if w.reader is None:  # поток открывается только при движении
             return None
         frame, _, _ = w.reader.latest()
         return frame

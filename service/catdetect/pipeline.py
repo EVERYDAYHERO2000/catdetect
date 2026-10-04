@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from .annotate import draw_overlay, to_jpeg
-from .nvr.reader import StreamReader
+from .nvr.reader import StreamReader, grab_frame
 from .vision.detector import crop
 from .vision.geometry import DirectionRule, center, point_in_polygon
 from .vision.tracker import Detection, HoldState, Track, TrackEvent, Tracker, TrackerParams
@@ -26,6 +26,8 @@ MAX_IDENTITY_SAMPLES = 10  # сколько кропов трека класси
 MAX_SAVED_FRAMES_PER_TRACK = 5
 SAVE_FRAME_INTERVAL = 2.0  # сек между сохранёнными кадрами одного трека
 STALE_FRAME = 5.0  # сек — кадр старше считается потерянным потоком
+STREAM_IDLE_CLOSE = 10.0  # сек без анализа до закрытия потока в режиме «только при движении»
+STREAM_OPEN_TIMEOUT = 15.0  # сек на открытие потока, после — «нет потока»
 DEBUG_CONF = 0.1  # в живом просмотре показываем и слабые детекции — чтобы было видно, почему не сработало
 
 _TRANSLIT = {k: v.strip("_") for k, v in zip(
@@ -59,6 +61,7 @@ class CameraSpec:
     identity_conf: float
     save_frames: bool
     aspect: str | None = None
+    keep_stream: bool = True  # False — RTSP открывается только при движении (меньше трафика)
 
 
 class CameraWorker(threading.Thread):
@@ -67,7 +70,14 @@ class CameraWorker(threading.Thread):
         self.spec = spec
         self.rt = runtime
         self.stop_event = threading.Event()
-        self.reader = StreamReader(spec.url, spec.slug, self.stop_event, spec.aspect)
+        # поток держим открытым всегда, если так настроено или анализ не зависит от движения
+        self.keep_stream = spec.keep_stream or spec.trigger != "motion"
+        self.reader: StreamReader | None = None
+        self._reader_stop: threading.Event | None = None
+        self._opened_at = 0.0
+        self._idle_since: float | None = None
+        self._stream_ok = True  # удалось ли подключиться в прошлый раз (пока поток закрыт намеренно)
+        self._viewer_until = 0.0  # открыт живой просмотр — держим поток, но не анализируем
         self.direction = DirectionRule.from_config(spec.direction)
         self.tracker = Tracker(
             TrackerParams(confirm_hits=spec.confirm_hits, confirm_conf=spec.confirm_conf), self.direction
@@ -88,6 +98,49 @@ class CameraWorker(threading.Thread):
 
     def stop(self) -> None:
         self.stop_event.set()
+        if self._reader_stop is not None:
+            self._reader_stop.set()
+
+    # --- видеопоток ---
+
+    def _open_stream(self) -> None:
+        if self.reader is not None:
+            return
+        self._reader_stop = threading.Event()
+        self.reader = StreamReader(self.spec.url, self.spec.slug, self._reader_stop, self.spec.aspect)
+        self._opened_at = time.monotonic()
+        self.reader.start()
+
+    def _close_stream(self) -> None:
+        if self.reader is None:
+            return
+        self._stream_ok = self.reader.native_size is not None
+        self._reader_stop.set()
+        self.reader = None
+        log.info("Камера %s: поток закрыт до следующего движения", self.spec.slug)
+
+    def _manage_stream(self, now: float, active: bool) -> None:
+        if self.keep_stream:
+            self._open_stream()
+            return
+        if active or now < self._viewer_until:
+            self._idle_since = None
+            self._open_stream()
+        elif self.reader is not None:
+            if self._idle_since is None:
+                self._idle_since = now
+            elif now - self._idle_since > STREAM_IDLE_CLOSE:
+                self._close_stream()
+
+    def _stream_online(self, now: float) -> bool:
+        if self.reader is None:
+            return self._stream_ok  # закрыт намеренно — показываем, удалось ли подключиться в прошлый раз
+        if self.reader.connected:
+            self._stream_ok = True
+            return True
+        if self.keep_stream or now - self._opened_at > STREAM_OPEN_TIMEOUT:
+            return False
+        return self._stream_ok  # поток ещё открывается
 
     def on_motion(self, active: bool) -> None:
         log.info("Камера %s: движение %s", self.spec.slug, "началось" if active else "закончилось")
@@ -110,14 +163,15 @@ class CameraWorker(threading.Thread):
     # --- основной цикл ---
 
     def run(self) -> None:
-        self.reader.start()
         interval = 1.0 / max(self.spec.fps, 0.1)
         last_id = 0
         next_t = 0.0
         while not self.stop_event.is_set():
             now = time.monotonic()
-            self.rt.state.set_flag(self.spec.id, "online", self.reader.connected)
-            if not self._active(now):
+            active = self._active(now)
+            self._manage_stream(now, active)
+            self.rt.state.set_flag(self.spec.id, "online", self._stream_online(now))
+            if not active:
                 if self._session is not None:
                     self._finish_session()
                 self._update_presence(now)
@@ -127,6 +181,8 @@ class CameraWorker(threading.Thread):
                 self.stop_event.wait(next_t - now)
                 continue
             next_t = now + interval
+            if self.reader is None:
+                continue
             frame, fid, fts = self.reader.latest()
             if frame is None or fid == last_id or now - fts > STALE_FRAME:
                 self._update_presence(now)
@@ -137,7 +193,8 @@ class CameraWorker(threading.Thread):
             except Exception:  # noqa: BLE001
                 log.exception("Камера %s: ошибка обработки кадра", self.spec.slug)
                 self.stop_event.wait(1.0)
-        self.reader.join(timeout=5)
+        if self.reader is not None:
+            self.reader.join(timeout=5)
 
     def filter_zone(self, dets: list[Detection]) -> list[Detection]:
         if not self.spec.zone:
@@ -198,7 +255,7 @@ class CameraWorker(threading.Thread):
             return
         frame = s.get("frame")
         if frame is None:
-            frame = self.reader.latest()[0]
+            frame = self.reader.latest()[0] if self.reader is not None else None
         best = s["best"]
         snapshot = None
         if frame is not None:
@@ -223,9 +280,12 @@ class CameraWorker(threading.Thread):
     def debug_image(self) -> np.ndarray | None:
         """Кадр со всеми детекциями: подтверждённые треки, слабые и отброшенные зоной рамки, статус."""
         now = time.monotonic()
+        self._viewer_until = now + 5.0
         dbg = self._debug
         if dbg is None or now - dbg[0] > 1.5:  # анализ сейчас не идёт — считаем на лету
-            frame, _, _ = self.reader.latest()
+            frame = self.reader.latest()[0] if self.reader is not None else None
+            if frame is None and self.reader is None:  # поток закрыт до движения — берём одиночный кадр
+                frame = grab_frame(self.spec.url, 10.0, self.spec.aspect)
             detector = self.rt.detector
             if frame is None or detector is None:
                 return None
