@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { mdiAccountCogOutline, mdiBrain, mdiContentCopy, mdiHomeAssistant, mdiKeyPlus, mdiKeyRemove, mdiLockReset } from "@mdi/js";
+import { mdiAccountCogOutline, mdiBrain, mdiBroom, mdiContentCopy, mdiContentSaveOutline, mdiHomeAssistant, mdiKeyPlus, mdiKeyRemove, mdiLockReset } from "@mdi/js";
 import Hint from "../components/Hint";
 import Icon from "../components/Icon";
 import ModelsPanel from "../components/ModelsPanel";
@@ -21,6 +21,68 @@ interface ComputeInfo {
   available: { cpu: boolean; gpu: string | null };
   active: { kind: string; label: string } | null;
   detector: { status?: string; avg_ms?: number; error?: string };
+}
+
+interface Retention {
+  hours: number;
+  last_run: number | null;
+  last_result: { events: number; crops: number; images: number } | null;
+}
+
+/** Срок хранения: всё, что не разобрано (история событий, «Неразобранные»), удаляется через N часов. */
+function StoragePanel() {
+  const { data, setData } = useApi<Retention>("/api/system/retention");
+  const [hours, setHours] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  if (!data) return null;
+  const value = hours ?? String(data.hours);
+
+  const save = async () => {
+    try {
+      const r = await api<Retention>("/api/system/retention", { method: "PUT", body: { hours: Number(value) } });
+      setData(r);
+      setHours(null);
+      toast.success(r.hours > 0 ? `Срок хранения: ${r.hours} ч` : "Очистка выключена — хранится всё");
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  };
+  const runNow = async () => {
+    setBusy(true);
+    try {
+      const r = await api<Retention>("/api/system/retention/run", { method: "POST" });
+      setData(r);
+      const res = r.last_result;
+      toast.success(res ? `Удалено: событий ${res.events}, неразобранных снимков ${res.crops}, кадров ${res.images}` : "Очистка выключена");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="panel stack" style={{ maxWidth: 560 }}>
+      <h2 className="label-text">Срок хранения<Hint>
+        Раз в час удаляется всё, что старше срока и не разобрано: события вместе со снимками (история событий
+        показывает только последние часы), снимки в «Неразобранных» и кадры без единой рамки. Остаются только
+        разобранные снимки — в папках объектов, в «Не объект» и кадры, отмеченные «Нет объектов».
+        Разложите нужные снимки до истечения срока.
+      </Hint></h2>
+      <div className="row" style={{ alignItems: "flex-end" }}>
+        <label className="field" style={{ width: 200 }}>
+          <span className="label-text">Хранить, ч<Hint>По умолчанию 48 часов. 0 — хранить всё.</Hint></span>
+          <input type="number" min={0} step={1} value={value} onChange={(e) => setHours(e.target.value)} />
+        </label>
+        <button onClick={save} disabled={hours === null || value === "" || Number(value) < 0}><Icon path={mdiContentSaveOutline} size={18} />Сохранить</button>
+        <button className="ghost" onClick={runNow} disabled={busy || data.hours <= 0}><Icon path={mdiBroom} size={18} />Очистить сейчас</button>
+      </div>
+      <div className="small muted">
+        {data.hours <= 0 ? "Очистка выключена — хранится всё" : data.last_run
+          ? `Последняя очистка ${fmtTime(data.last_run)}: событий ${data.last_result?.events ?? 0}, неразобранных снимков ${data.last_result?.crops ?? 0}, кадров ${data.last_result?.images ?? 0}`
+          : "Первая очистка — через минуту после запуска сервиса, дальше раз в час"}
+      </div>
+    </div>
+  );
 }
 
 function ComputePanel() {
@@ -112,6 +174,7 @@ export default function Settings() {
       {tab === "models" && (
         <>
           <ComputePanel />
+          <StoragePanel />
           <ModelsPanel />
         </>
       )}

@@ -23,3 +23,6 @@ runs/
 .DS_Store
 .claude/
 *.tsbuildinfo
+
+# личные автоматизации Home Assistant — не в репозиторий
+ha-automations/

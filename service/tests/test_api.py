@@ -235,3 +235,64 @@ def test_overview(authed):
     assert set(d) == {"cameras", "nvrs", "objects", "events", "training", "system"}
     assert d["system"]["mem_total"] > 0 and 0 <= d["system"]["cpu_percent"] <= 100
     assert d["cameras"]["total"] == 0 and d["training"]["jobs"] == 0
+
+
+def test_retention_keeps_only_sorted(authed, app):
+    from datetime import timedelta
+
+    import numpy as np
+    from sqlmodel import Session, select
+
+    from catdetect.annotate import to_jpeg
+    from catdetect.cleanup import DEFAULT_HOURS, run_cleanup
+    from catdetect.models import Annotation, Event, Image, utcnow
+
+    assert DEFAULT_HOURS == 48
+    n = authed.post("/api/nvrs", json={"name": "N", "host": "127.0.0.1"}).json()
+    cam = authed.post("/api/cameras", json={"slug": "door", "name": "Д", "nvr_id": n["id"], "channel": 1}).json()
+    barsik = authed.post("/api/identities", json={"name": "Барсик", "species": "cat"}).json()
+    rec, st, eng = app.state.runtime.recorder, app.state.settings, app.state.engine
+    frame = np.zeros((60, 80, 3), np.uint8)
+    jpg = to_jpeg(frame)
+    one = [{"box": [0.1, 0.1, 0.4, 0.4], "species": "cat", "conf": 0.9, "identity_id": None}]
+    two = one + [{"box": [0.6, 0.6, 0.9, 0.9], "species": "cat", "conf": 0.8, "identity_id": None}]
+
+    ev_old = rec.save_event(cam["id"], "seen", "cat", None, 0.9, None, 1, jpg, None, raw=frame, predictions=one)
+    ev_new = rec.save_event(cam["id"], "seen", "cat", None, 0.9, None, 1, jpg, None, raw=frame, predictions=one)
+    f_pending = rec.save_frame(cam["id"], frame, one)        # только неразобранная карточка
+    f_mixed = rec.save_frame(cam["id"], frame, two)          # одна разложена, другая нет
+    f_sorted = rec.save_frame(cam["id"], frame, one)         # разложена
+    f_rejected = rec.save_frame(cam["id"], frame, one)       # «Не объект»
+    f_negative = rec.save_frame(cam["id"], frame, [])        # «Нет объектов»
+    f_empty = rec.save_frame(cam["id"], frame, [])           # никого не нашли, не размечен
+    f_pending_new = rec.save_frame(cam["id"], frame, one)    # свежий неразобранный
+
+    crops = {c["image_id"]: c for c in reversed(authed.get("/api/objects/crops?folder=pending&limit=500").json()["items"])}
+    mixed_ids = [c["id"] for c in authed.get("/api/objects/crops?folder=pending&limit=500").json()["items"] if c["image_id"] == f_mixed]
+    authed.post("/api/objects/move", json={"ids": [mixed_ids[0], crops[f_sorted]["id"]], "target": barsik["id"]})
+    authed.post("/api/objects/move", json={"ids": [crops[f_rejected]["id"]], "target": "rejected"})
+    authed.put(f"/api/images/{f_negative}/annotations", json={"annotations": []})
+
+    old = utcnow() - timedelta(hours=60)
+    with Session(eng) as s:
+        e = s.get(Event, ev_old["id"]); e.ts = old; s.add(e)
+        old_event_files = [st.data_dir / e.snapshot_path, st.data_dir / e.raw_path]
+        for iid in (f_pending, f_mixed, f_sorted, f_rejected, f_negative, f_empty):
+            im = s.get(Image, iid); im.captured_at = old; s.add(im)
+        s.commit()
+
+    res = run_cleanup(eng, st.data_dir, 48)
+    assert res == {"events": 1, "crops": 2, "images": 2, "hours": 48}
+    assert not any(p.exists() for p in old_event_files)
+    with Session(eng) as s:
+        assert s.get(Event, ev_old["id"]) is None and s.get(Event, ev_new["id"]) is not None
+        assert s.get(Image, f_pending) is None and s.get(Image, f_empty) is None
+        for keep in (f_mixed, f_sorted, f_rejected, f_negative, f_pending_new):
+            assert s.get(Image, keep) is not None, keep
+        mixed_left = s.exec(select(Annotation).where(Annotation.image_id == f_mixed)).all()
+        assert [a.state for a in mixed_left] == ["assigned"] and s.get(Image, f_mixed).status == "labeled"
+    assert run_cleanup(eng, st.data_dir, 48)["crops"] == 0
+
+    assert authed.get("/api/system/retention").json()["hours"] == 48
+    assert authed.put("/api/system/retention", json={"hours": 72}).json()["hours"] == 72
+    assert authed.put("/api/system/retention", json={"hours": -1}).status_code == 422

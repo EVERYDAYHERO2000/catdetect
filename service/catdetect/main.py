@@ -12,6 +12,7 @@ from . import __version__
 from .api import auth, cameras, events, identities, images, nvrs, objects, overview, system, training
 from .auth import SessionSigner
 from .db import make_engine
+from .cleanup import Cleaner
 from .events import EventBus
 from .labels import normalize_legacy
 from .runtime import Runtime
@@ -29,14 +30,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     bus = EventBus()
     runtime = Runtime(settings, engine, bus)
     trainer = TrainingManager(settings, engine, lambda: runtime.resolve_compute().device)
+    cleaner = Cleaner(engine, settings.data_dir)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         bus.bind_loop(asyncio.get_running_loop())
         trainer.recover()
         runtime.start()
+        if settings.run_pipeline:
+            cleaner.start()
         log.info("CatDetect %s запущен, данные: %s", __version__, settings.data_dir)
         yield
+        cleaner.stop_event.set()
         runtime.stop()
 
     app = FastAPI(title="CatDetect", version=__version__, lifespan=lifespan)
@@ -45,6 +50,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.bus = bus
     app.state.runtime = runtime
     app.state.training = trainer
+    app.state.cleaner = cleaner
     app.state.signer = SessionSigner(settings.secret_key)
 
     for r in (auth, nvrs, cameras, identities, images, events, training, system, objects, overview):
