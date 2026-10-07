@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .geometry import Box
+from .geometry import Box, iou
 from .tracker import Detection
 
 log = logging.getLogger(__name__)
@@ -52,6 +52,20 @@ def prepare_weights(weights: str | Path, fmt: str | None, imgsz: int) -> tuple[s
         log.info("Экспорт %s в %s (один раз, займёт до минуты)…", weights.name, fmt)
         target = Path(YOLO(str(weights)).export(format=fmt, imgsz=imgsz, verbose=False))
     return str(target), None
+
+
+DUPLICATE_IOU = 0.7  # рамки, перекрывающиеся сильнее, — один и тот же объект
+
+
+def merge_duplicates(dets: list[Detection], iou_threshold: float = DUPLICATE_IOU) -> list[Detection]:
+    """Детектор иногда обводит одно животное дважды (например, как «кошку» и как «собаку»).
+    Оставляем самую уверенную рамку независимо от вида. Порог высокий, чтобы не склеить
+    двух прижавшихся друг к другу котов."""
+    kept: list[Detection] = []
+    for d in sorted(dets, key=lambda d: -d.conf):
+        if all(iou(d.box, k.box) < iou_threshold for k in kept):
+            kept.append(d)
+    return kept
 
 
 class Detector:
@@ -97,7 +111,7 @@ class Detector:
             return out
         for xyxyn, cls, conf in zip(res.boxes.xyxyn.tolist(), res.boxes.cls.tolist(), res.boxes.conf.tolist()):
             out.append(Detection(self.names[int(cls)], float(conf), tuple(float(v) for v in xyxyn)))
-        return out
+        return merge_duplicates(out)
 
     def warmup(self) -> None:
         self.detect(np.zeros((480, 640, 3), dtype=np.uint8), self.names.values())

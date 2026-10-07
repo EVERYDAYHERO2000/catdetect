@@ -15,7 +15,7 @@ from .annotate import draw_overlay, to_jpeg
 from .nvr.reader import StreamReader, grab_frame
 from .vision.detector import crop
 from .vision.geometry import DirectionRule, center, point_in_polygon
-from .vision.tracker import Detection, HoldState, Track, TrackEvent, Tracker, TrackerParams
+from .vision.tracker import Detection, HoldState, Track, TrackEvent, Tracker, TrackerParams, assign_identities
 
 if TYPE_CHECKING:
     from .runtime import Runtime
@@ -215,10 +215,9 @@ class CameraWorker(threading.Thread):
         if identifier is not None:
             for t in self.tracker.tracks.values():
                 if t.last_seen == now and t.identity_samples < MAX_IDENTITY_SAMPLES:
-                    ident, prob = identifier.identify(crop(frame, t.box))
-                    if ident is not None and self.rt.identity_species.get(ident) != t.species:
-                        ident = None  # классификатор назвал объект другого вида — не верим
-                    t.add_identity(ident, prob)
+                    # ответ классификатора записываем как есть; вид проверяется при решении (_identity_of),
+                    # потому что вид трека может смениться после голосования по следующим кадрам
+                    t.add_identity(*identifier.identify(crop(frame, t.box)))
 
         for ev in events:
             self._emit(ev, frame)
@@ -275,6 +274,20 @@ class CameraWorker(threading.Thread):
                  f"{best['species']} {best['conf']:.2f} ({best['reason']})" if best else "нет")
         self.rt.state.on_motion_event(record)
 
+    def _identities(self) -> dict[int, tuple[int | None, float | None]]:
+        """Имена всех объектов в кадре сразу: только папки того же вида, что и объект,
+        и каждое имя — не больше одному объекту (два «Ильи» в кадре быть не может)."""
+        species = self.rt.identity_species
+        tracks = list(self.tracker.tracks.values())
+        cands = {t.id: t.identity_candidates(lambda i, sp=t.species: species.get(i) == sp) for t in tracks}
+        latest = max((t.last_seen for t in tracks), default=0.0)
+        # объекты на текущем кадре получают имена раньше «потерянных» (ещё не удалённых) треков
+        priority = {t.id: 0 if t.last_seen == latest else 1 for t in tracks}
+        return assign_identities(cands, self.spec.identity_conf, priority)
+
+    def _identity_of(self, t: Track) -> tuple[int | None, float | None]:
+        return self._identities().get(t.id, (None, None))
+
     # --- живой просмотр ---
 
     def debug_image(self) -> np.ndarray | None:
@@ -321,7 +334,7 @@ class CameraWorker(threading.Thread):
         for t in self.tracker.tracks.values():
             if now is not None and t.last_seen != now:
                 continue
-            ident, _ = t.identity(self.spec.identity_conf)
+            ident, _ = self._identity_of(t)
             name = self.rt.identity_names.get(ident, "") if ident else ""
             label = f"#{t.id} {ascii_label(name) or t.species} {t.mean_conf:.2f}"
             out.append({"box": t.box, "species": t.species, "label": label, "confirmed": t.confirmed,
@@ -330,7 +343,7 @@ class CameraWorker(threading.Thread):
 
     def _emit(self, ev: TrackEvent, frame: np.ndarray) -> None:
         t: Track = ev.track
-        ident, iconf = t.identity(self.spec.identity_conf)
+        ident, iconf = self._identity_of(t)
         img = draw_overlay(frame, self.spec.zone and [list(p) for p in self.spec.zone], self.spec.direction,
                            self._boxes())
         snapshot = to_jpeg(img)
@@ -370,7 +383,7 @@ class CameraWorker(threading.Thread):
 
         seen: dict[int, bool] = {}
         for t in confirmed:
-            ident, _ = t.identity(self.spec.identity_conf)
+            ident, _ = self._identity_of(t)
             if ident is not None:
                 seen[ident] = seen.get(ident, False) or t.side == 1
         for ident in set(seen) | set(self._id_present):

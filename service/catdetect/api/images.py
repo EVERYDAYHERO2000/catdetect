@@ -20,6 +20,8 @@ from .deps import Auth, Cfg, Db, Rt, not_found
 
 router = APIRouter(prefix="/api/images", tags=["images"])
 
+SPECIES_RU = {"cat": "кошка", "dog": "собака", "person": "человек"}
+
 
 class AnnotationIn(BaseModel):
     box: list[float] = Field(min_length=4, max_length=4)
@@ -89,6 +91,19 @@ def image_file(image_id: int, _: Auth, db: Db, cfg: Cfg, w: int | None = None):
     return image_response(path, camera_aspect(db, img.camera_id), min(w, 1920) if w else None)
 
 
+def unique_identities(items: list[dict]) -> list[dict]:
+    """На одном кадре одно имя — у одного объекта: при повторе имя остаётся у самого уверенного."""
+    used: set[int] = set()
+    for it in sorted(items, key=lambda x: -(x.get("identity_conf") or 0)):
+        if it.get("identity_id") is None:
+            continue
+        if it["identity_id"] in used:
+            it["identity_id"] = None
+        else:
+            used.add(it["identity_id"])
+    return items
+
+
 def _detect_all(rt, frame) -> list[dict]:
     if rt.detector is None:
         return []
@@ -96,11 +111,11 @@ def _detect_all(rt, frame) -> list[dict]:
     for d in rt.detector.detect(frame, SPECIES, 0.25):
         item = {"box": list(d.box), "species": d.species, "conf": round(d.conf, 3), "identity_id": None}
         if rt.identifier is not None:
-            ident, _p = rt.identifier.identify(crop(frame, d.box))
+            ident, p = rt.identifier.identify(crop(frame, d.box))
             if ident is not None and rt.identity_species.get(ident) == d.species:
-                item["identity_id"] = ident
+                item["identity_id"], item["identity_conf"] = ident, round(p, 3)
         out.append(item)
-    return out
+    return unique_identities(out)
 
 
 @router.post("/upload")
@@ -139,6 +154,10 @@ def save_annotations(image_id: int, body: AnnotationsIn, _: Auth, db: Db):
     img = db.get(Image, image_id)
     if img is None:
         raise not_found("Кадр")
+    names = [a.identity_id for a in body.annotations if a.identity_id is not None]
+    if len(names) != len(set(names)):
+        dup = db.get(Identity, next(i for i in names if names.count(i) > 1))
+        raise HTTPException(422, f"«{dup.name if dup else '?'}» отмечен на кадре дважды — на одном кадре объект может быть только один раз")
     for a in db.exec(select(Annotation).where(Annotation.image_id == image_id, Annotation.state != REJECTED)).all():
         db.delete(a)
     for a in body.annotations:
@@ -147,8 +166,13 @@ def save_annotations(image_id: int, body: AnnotationsIn, _: Auth, db: Db):
         y1, y2 = sorted((y1, y2))
         if x2 - x1 < 0.003 or y2 - y1 < 0.003:
             continue
-        if a.identity_id is not None and db.get(Identity, a.identity_id) is None:
-            raise HTTPException(422, "Объект не найден")
+        if a.identity_id is not None:
+            ident = db.get(Identity, a.identity_id)
+            if ident is None:
+                raise HTTPException(422, "Объект не найден")
+            if ident.species != a.species:
+                raise HTTPException(422, f"«{ident.name}» — {SPECIES_RU[ident.species]}, а рамка отмечена как "
+                                         f"{SPECIES_RU[a.species]}: выберите другую папку или другой вид")
         db.add(Annotation(image_id=image_id, x1=x1, y1=y1, x2=x2, y2=y2, species=a.species,
                           identity_id=a.identity_id, state=ASSIGNED if a.identity_id else PENDING,
                           assigned_at=utcnow() if a.identity_id else None))
@@ -207,6 +231,6 @@ async def predict(image_id: int, _: Auth, db: Db, rt: Rt, cfg: Cfg, min_conf: fl
                     ident = None
                 item["identity_id"], item["identity_conf"] = ident, round(p, 3)
             out.append(item)
-        return out
+        return unique_identities(out)
 
     return {"predictions": await run_in_threadpool(run)}

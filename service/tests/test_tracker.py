@@ -111,3 +111,27 @@ def test_apply_aspect():
     assert apply_aspect(frame, "3:4").shape[:2] == (1616, 1212)  # уже — уменьшаем ширину
     assert parse_aspect("4:3") == pytest.approx(4 / 3)
     assert parse_aspect("bad") is None and parse_aspect("0:3") is None
+
+
+def test_assign_identities_unique_per_frame():
+    from catdetect.vision.tracker import assign_identities
+
+    # оба объекта «похожи на Илью» (7): имя получает более уверенный, второй переголосовывает
+    r = assign_identities({1: {7: 0.9}, 2: {7: 0.8, 3: 0.7}}, threshold=0.6)
+    assert r[1] == (7, 0.9) and r[2] == (3, 0.7)
+    # у второго нет другого подходящего имени — остаётся без имени
+    r = assign_identities({1: {7: 0.9}, 2: {7: 0.8, 3: 0.4}}, threshold=0.6)
+    assert r[1][0] == 7 and r[2][0] is None
+    # объект на текущем кадре важнее «потерянного» трека, даже с меньшей уверенностью
+    r = assign_identities({1: {7: 0.95}, 2: {7: 0.7}}, threshold=0.6, priority={1: 1, 2: 0})
+    assert r[2][0] == 7 and r[1][0] is None
+
+
+def test_merge_duplicate_boxes():
+    from catdetect.vision.detector import merge_duplicates
+
+    a = Detection("cat", 0.9, (0.10, 0.10, 0.40, 0.40))
+    same = Detection("dog", 0.6, (0.11, 0.11, 0.41, 0.41))   # то же животное, другой вид
+    near = Detection("cat", 0.8, (0.30, 0.10, 0.60, 0.40))   # соседний кот (перекрытие ~0.2)
+    out = merge_duplicates([same, a, near])
+    assert a in out and near in out and same not in out

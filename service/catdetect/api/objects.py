@@ -86,11 +86,11 @@ class MoveIn(BaseModel):
 def move_crops(body: MoveIn, _: Auth, db: Db):
     """Переложить карточки в папку объекта, в «Неразобранные» или в «Не объект»."""
     try:
-        n = move(db, body.ids, body.target)
+        n, skipped = move(db, body.ids, body.target)
     except ValueError as e:
         raise HTTPException(404, str(e)) from e
     db.commit()
-    return {"moved": n}
+    return {"moved": n, "skipped": skipped}
 
 
 class IdsIn(BaseModel):
@@ -99,16 +99,21 @@ class IdsIn(BaseModel):
 
 @router.post("/accept_suggestions")
 def accept_suggestions(body: IdsIn, _: Auth, db: Db):
-    """Разложить выбранные карточки по подсказкам классификатора («Барсик?» → Барсик)."""
+    """Разложить выбранные карточки по подсказкам классификатора («Барсик?» → Барсик).
+    Подсказка другого вида (собака → «Илья») не принимается."""
     moved = 0
     groups: dict[int, list[int]] = {}
+    species = dict(db.exec(select(Identity.id, Identity.species)).all())
     for a in db.exec(select(Annotation).where(col(Annotation.id).in_(body.ids))).all():
-        if a.suggested_identity_id:
+        if a.suggested_identity_id and species.get(a.suggested_identity_id) == a.species:
             groups.setdefault(a.suggested_identity_id, []).append(a.id)
+    skipped = 0
     for ident_id, ids in groups.items():
         try:
-            moved += move(db, ids, ident_id)
+            n, s = move(db, ids, ident_id)
         except ValueError:
             continue
+        moved += n
+        skipped += s
     db.commit()
-    return {"moved": moved}
+    return {"moved": moved, "skipped": skipped}

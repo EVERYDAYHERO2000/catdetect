@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .geometry import Box, DirectionRule, Point, center, distance, iou
@@ -62,15 +63,53 @@ class Track:
         self.identity_scores[identity_id] = self.identity_scores.get(identity_id, 0.0) + prob
         self.identity_samples += 1
 
-    def identity(self, threshold: float) -> tuple[int | None, float | None]:
-        """Лучшая личность и её средняя вероятность; None, если ниже порога."""
+    def identity_candidates(self, allowed: Callable[[int], bool] | None = None) -> dict[int, float]:
+        """Все личности, за которые голосовал классификатор, со средней вероятностью (по всем образцам)."""
+        if not self.identity_samples:
+            return {}
+        return {k: v / self.identity_samples for k, v in self.identity_scores.items()
+                if k is not None and (allowed is None or allowed(k))}
+
+    def identity(self, threshold: float, allowed: Callable[[int], bool] | None = None) -> tuple[int | None, float | None]:
+        """Лучшая личность и её средняя вероятность; None, если ниже порога.
+
+        allowed — какие личности допустимы сейчас (например, только того же вида, что и трек: вид
+        определяется голосованием и может смениться после того, как классификатор уже высказался).
+        """
         if not self.identity_samples:
             return None, None
-        best = max(self.identity_scores, key=self.identity_scores.get)
-        score = self.identity_scores[best] / self.identity_samples
-        if best is None or score < threshold:
+        scores = {k: v for k, v in self.identity_scores.items() if k is not None and (allowed is None or allowed(k))}
+        if not scores:
+            return None, None
+        best = max(scores, key=scores.get)
+        score = scores[best] / self.identity_samples
+        if score < threshold:
             return None, score
         return best, score
+
+
+def assign_identities(candidates: dict[int, dict[int, float]], threshold: float,
+                      priority: dict[int, int] | None = None) -> dict[int, tuple[int | None, float | None]]:
+    """Раздать имена объектам одного кадра: каждое имя — не больше одному объекту.
+
+    candidates: {track_id: {identity_id: оценка}}. Имя получает объект с самой высокой оценкой;
+    остальные «переголосовывают» — берут следующее имя из своих кандидатов (выше порога) или остаются без имени.
+    priority: {track_id: группа} — меньшая группа раздаётся первой (объекты на текущем кадре раньше потерянных).
+    """
+    priority = priority or {}
+    pairs = sorted(((priority.get(tid, 0), -score, tid, ident) for tid, c in candidates.items()
+                    for ident, score in c.items() if score >= threshold))
+    out: dict[int, tuple[int | None, float | None]] = {tid: (None, max(c.values(), default=None))
+                                                      for tid, c in candidates.items()}
+    used: set[int] = set()
+    done: set[int] = set()
+    for _, neg, tid, ident in pairs:
+        if tid in done or ident in used:
+            continue
+        out[tid] = (ident, -neg)
+        used.add(ident)
+        done.add(tid)
+    return out
 
 
 @dataclass(frozen=True)

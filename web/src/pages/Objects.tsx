@@ -93,15 +93,17 @@ export default function Objects() {
   const moveTo = async (target: Target, ids?: number[]) => {
     const list = ids ?? [...selected];
     if (!list.length) return;
-    const r = await api<{ moved: number }>("/api/objects/move", { body: { ids: list, target } });
-    toast.success(`${r.moved} ${plural(r.moved, "снимок", "снимка", "снимков")} → «${folderName(target)}»`);
+    const r = await api<{ moved: number; skipped?: number }>("/api/objects/move", { body: { ids: list, target } });
+    if (r.moved || !r.skipped) toast.success(`${r.moved} ${plural(r.moved, "снимок", "снимка", "снимков")} → «${folderName(target)}»`);
+    if (r.skipped) toast.info(`${r.skipped} ${plural(r.skipped, "снимок пропущен", "снимка пропущено", "снимков пропущено")}: на том же кадре уже есть «${folderName(target)}» — объект не может быть на кадре дважды`);
     refresh();
   };
 
   const acceptSuggestions = async () => {
     const ids = selected.size ? [...selected] : crops.filter((c) => c.suggested_identity_id).map((c) => c.id);
-    const r = await api<{ moved: number }>("/api/objects/accept_suggestions", { body: { ids } });
+    const r = await api<{ moved: number; skipped?: number }>("/api/objects/accept_suggestions", { body: { ids } });
     toast.success(r.moved ? `Разложено по подсказкам: ${r.moved}` : "Подсказок для выбранных снимков нет");
+    if (r.skipped) toast.info(`Пропущено ${r.skipped}: на том же кадре это имя уже есть — объект не может быть на кадре дважды`);
     refresh();
   };
 

@@ -43,7 +43,15 @@ function Editor({ imageId }: { imageId: number }) {
   const lastSpecies = useRef<Species>((localStorage.getItem("cd.lastSpecies") as Species) || "cat");
 
   const fromPredictions = (preds: Prediction[]): AnnotationItem[] =>
-    preds.map((p) => ({ box: p.box, species: p.species, identity_id: p.identity_id ?? null }));
+    {
+      const used = new Set<number>();
+      return preds.map((p) => {
+        const ident = identities?.find((x) => x.id === p.identity_id);
+        const ok = p.identity_id != null && !used.has(p.identity_id) && (!identities || (ident && ident.species === p.species));
+        if (ok) used.add(p.identity_id!);
+        return { box: p.box, species: p.species, identity_id: ok ? p.identity_id! : null };
+      });
+    }
 
   useEffect(() => {
     api<ImageItem>(`/api/images/${imageId}`)
@@ -106,6 +114,30 @@ function Editor({ imageId }: { imageId: number }) {
       localStorage.setItem("cd.lastSpecies", patch.species);
     }
   };
+  // когда загрузился список папок — убрать имена другого вида (подсказки модели из старых кадров)
+  useEffect(() => {
+    if (!identities) return;
+    setBoxes((bs) => bs.map((b) => {
+      const ident = identities.find((x) => x.id === b.identity_id);
+      return ident && ident.species !== b.species ? { ...b, identity_id: null } : b;
+    }));
+  }, [identities]);
+
+  /** Назначить имя рамке. Объект на кадре один: у другой рамки с этим именем оно снимается. */
+  const setIdentity = (idx: number, iid: number | null) => {
+    const ident = identities?.find((x) => x.id === iid);
+    setBoxes((bs) => bs.map((b, k) => {
+      if (k === idx) return { ...b, identity_id: ident ? ident.id : null, ...(ident ? { species: ident.species } : {}) };
+      return ident && b.identity_id === ident.id ? { ...b, identity_id: null } : b;
+    }));
+  };
+
+  /** Смена вида сбрасывает имя, если папка другого вида (собака не может остаться «Ильёй»). */
+  const setSpecies = (idx: number, species: Species) => {
+    const cur = boxes[idx];
+    const ident = identities?.find((x) => x.id === cur?.identity_id);
+    update(idx, { species, ...(ident && ident.species !== species ? { identity_id: null } : {}) });
+  };
   const del = (idx: number) => {
     setBoxes((bs) => bs.filter((_, i) => i !== idx));
     setSel(null);
@@ -119,13 +151,13 @@ function Editor({ imageId }: { imageId: number }) {
       else if (e.key === "n" || e.key === "т") save([]);
       else if (sel !== null) {
         if (e.key === "Delete" || e.key === "Backspace") del(sel);
-        else if (e.key === "c" || e.key === "с") update(sel, { species: "cat" });
-        else if (e.key === "d" || e.key === "в") update(sel, { species: "dog" });
-        else if (e.key === "p" || e.key === "з") update(sel, { species: "person" });
-        else if (e.key === "0") update(sel, { identity_id: null });
+        else if (e.key === "c" || e.key === "с") setSpecies(sel, "cat");
+        else if (e.key === "d" || e.key === "в") setSpecies(sel, "dog");
+        else if (e.key === "p" || e.key === "з") setSpecies(sel, "person");
+        else if (e.key === "0") setIdentity(sel, null);
         else if (/^[1-9]$/.test(e.key) && identities?.[+e.key - 1]) {
           const ident = identities[+e.key - 1];
-          update(sel, { identity_id: ident.id, species: ident.species });
+          setIdentity(sel, ident.id);
         } else if (e.key === "Escape") setSel(null);
       }
     };
@@ -262,16 +294,17 @@ function Editor({ imageId }: { imageId: number }) {
                 </div>
                 <div className="row">
                   {ALL_SPECIES.map((s) => (
-                    <button key={s} className={`small ${b.species === s ? "active" : ""}`} onClick={() => update(i, { species: s })}>{SPECIES_LABEL[s]}</button>
+                    <button key={s} className={`small ${b.species === s ? "active" : ""}`} onClick={() => setSpecies(i, s)}>{SPECIES_LABEL[s]}</button>
                   ))}
                 </div>
                 <select value={b.identity_id ?? ""} onChange={(e) => {
                   const iid = e.target.value ? +e.target.value : null;
                   const ident = identities?.find((x) => x.id === iid);
-                  update(i, { identity_id: iid, ...(ident ? { species: ident.species } : {}) });
+                  setIdentity(i, ident ? iid : null);
                 }}>
                   <option value="">— в «Неразобранные» —</option>
-                  {identities?.map((ident, k) => (
+                  {/* только папки того же вида: собака не может быть «Ильёй» */}
+                  {identities?.map((ident, k) => ident.species === b.species && (
                     <option key={ident.id} value={ident.id}>{k < 9 ? `${k + 1}: ` : ""}{ident.name}</option>
                   ))}
                 </select>

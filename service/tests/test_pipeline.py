@@ -94,11 +94,33 @@ def test_identity_species_must_match_track():
     rt.identifier = FakeIdentifier(5)  # классификатор ошибочно назвал кошку человеком
     w.process(frame, 0.0)
     t = next(iter(w.tracker.tracks.values()))
-    assert t.identity(0.5)[0] is None
+    assert w._identity_of(t)[0] is None
     rt.identifier = FakeIdentifier(6)
     for i in range(1, 4):
         w.process(frame, float(i))
-    assert t.identity(0.5)[0] == 6
+    assert w._identity_of(t)[0] == 6
+
+
+def test_identity_follows_species_vote():
+    """Вид трека сменился после голосования (человек → собака) — имя человека не должно остаться."""
+    rt = FakeRuntime([Detection("person", 0.6, (0.1, 0.4, 0.2, 0.6))])
+    rt.identity_species = {1: "person", 2: "dog"}
+    rt.identifier = FakeIdentifier(1)  # пока трек «человек», классификатор говорит «Илья»
+    w = CameraWorker(spec(species=("cat", "dog", "person")), rt)
+    frame = np.zeros((288, 352, 3), np.uint8)
+    for i in range(2):
+        w.process(frame, float(i))
+    t = next(iter(w.tracker.tracks.values()))
+    assert t.species == "person" and w._identity_of(t)[0] == 1
+    rt.detector = FakeDetector([Detection("dog", 0.9, (0.1, 0.4, 0.2, 0.6))])
+    rt.identifier = FakeIdentifier(None)
+    for i in range(2, 6):
+        w.process(frame, float(i))
+    assert t.species == "dog"
+    assert w._identity_of(t)[0] is None  # «Илья» — человек, а трек теперь собака
+    boxes = w._boxes()
+    assert boxes[0]["species"] == "dog" and boxes[0]["identity_id"] is None
+
 
 
 def test_stream_opened_only_on_motion(monkeypatch):
@@ -157,3 +179,21 @@ def test_compare_verdict_and_base_remap(tmp_path):
     img = tmp_path / "base" / "images" / "val" / "5.jpg"
     assert img.exists() and not img.is_symlink()  # копия, а не ссылка — иначе ultralytics найдёт старую разметку
     assert data.exists()
+
+
+def test_two_tracks_cannot_share_identity():
+    rt = FakeRuntime([Detection("person", 0.9, (0.05, 0.4, 0.15, 0.6)), Detection("person", 0.9, (0.7, 0.4, 0.8, 0.6))])
+    rt.identity_species = {1: "person", 2: "person"}
+    probs = iter([0.9, 0.7] * 10)
+
+    class Seq:
+        def identify(self, crop_img):
+            return 1, next(probs)
+
+    rt.identifier = Seq()
+    w = CameraWorker(spec(species=("person",), zone=None), rt)  # классификатор зовёт «Ильёй» обоих
+    frame = np.zeros((288, 352, 3), np.uint8)
+    for i in range(3):
+        w.process(frame, float(i))
+    names = [b["identity_id"] for b in w._boxes()]
+    assert sorted(names, key=lambda x: x is None) == [1, None]  # «Илья» только один

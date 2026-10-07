@@ -296,3 +296,101 @@ def test_retention_keeps_only_sorted(authed, app):
     assert authed.get("/api/system/retention").json()["hours"] == 48
     assert authed.put("/api/system/retention", json={"hours": 72}).json()["hours"] == 72
     assert authed.put("/api/system/retention", json={"hours": -1}).status_code == 422
+
+
+
+def test_suggestions_must_match_species(authed, app):
+    import numpy as np
+    from sqlmodel import Session
+
+    from catdetect.labels import normalize_legacy
+    from catdetect.models import Annotation
+
+    ilia = authed.post("/api/identities", json={"name": "Илья", "species": "person"}).json()
+    rex = authed.post("/api/identities", json={"name": "Рекс", "species": "dog"}).json()
+    rec = app.state.runtime.recorder
+    frame = np.zeros((60, 80, 3), np.uint8)
+    rec.save_frame(None, frame, [
+        {"box": [0.1, 0.1, 0.4, 0.4], "species": "dog", "conf": 0.9, "identity_id": ilia["id"]},  # собака «Илья»
+        {"box": [0.5, 0.5, 0.9, 0.9], "species": "dog", "conf": 0.9, "identity_id": rex["id"]},
+    ])
+    crops = authed.get("/api/objects/crops?folder=pending").json()["items"]
+    sugg = sorted(c["suggested_identity_id"] for c in crops if c["suggested_identity_id"])
+    assert sugg == [rex["id"]]  # подсказку другого вида не сохранили
+
+    # старая ошибочная подсказка в базе: принять нельзя, при запуске очищается
+    with Session(app.state.engine) as s:
+        a = s.get(Annotation, crops[0]["id"] if crops[0]["suggested_identity_id"] is None else crops[1]["id"])
+        a.suggested_identity_id = ilia["id"]; s.add(a); s.commit(); bad_id = a.id
+    r = authed.post("/api/objects/accept_suggestions", json={"ids": [bad_id]}).json()
+    assert r["moved"] == 0
+    normalize_legacy(app.state.engine)
+    with Session(app.state.engine) as s:
+        assert s.get(Annotation, bad_id).suggested_identity_id is None
+
+
+
+def test_annotation_species_must_match_identity(authed, app):
+    import numpy as np
+
+    ilia = authed.post("/api/identities", json={"name": "Илья", "species": "person"}).json()
+    image_id = app.state.runtime.recorder.save_frame(None, np.zeros((60, 80, 3), np.uint8), [], "upload")
+    bad = {"annotations": [{"box": [0.1, 0.1, 0.5, 0.5], "species": "dog", "identity_id": ilia["id"]}]}
+    r = authed.put(f"/api/images/{image_id}/annotations", json=bad)
+    assert r.status_code == 422 and "Илья" in r.json()["detail"]
+    ok = {"annotations": [{"box": [0.1, 0.1, 0.5, 0.5], "species": "person", "identity_id": ilia["id"]}]}
+    assert authed.put(f"/api/images/{image_id}/annotations", json=ok).status_code == 200
+
+
+def test_one_identity_per_frame_in_folders(authed, app):
+    import numpy as np
+
+    ilia = authed.post("/api/identities", json={"name": "Илья", "species": "person"}).json()
+    rec = app.state.runtime.recorder
+    frame = np.zeros((60, 80, 3), np.uint8)
+    two = [{"box": [0.1, 0.1, 0.4, 0.4], "species": "person", "conf": 0.9, "identity_id": ilia["id"], "identity_conf": 0.8},
+           {"box": [0.5, 0.5, 0.9, 0.9], "species": "person", "conf": 0.7, "identity_id": ilia["id"], "identity_conf": 0.9}]
+    img1 = rec.save_frame(None, frame, two)
+    img2 = rec.save_frame(None, frame, two[:1])
+    crops = authed.get("/api/objects/crops?folder=pending&limit=50").json()["items"]
+    on1 = [c for c in crops if c["image_id"] == img1]
+    assert sum(1 for c in on1 if c["suggested_identity_id"] == ilia["id"]) == 1  # подсказка «Илья» одна на кадр
+
+    r = authed.post("/api/objects/move", json={"ids": [c["id"] for c in crops], "target": ilia["id"]}).json()
+    assert r == {"moved": 2, "skipped": 1}  # с кадра 1 — только одна карточка, с кадра 2 — своя
+    left = authed.get("/api/objects/crops?folder=pending").json()["items"]
+    assert [c["image_id"] for c in left] == [img1]
+
+    dup = {"annotations": [{"box": [0.1, 0.1, 0.4, 0.4], "species": "person", "identity_id": ilia["id"]},
+                           {"box": [0.5, 0.5, 0.9, 0.9], "species": "person", "identity_id": ilia["id"]}]}
+    r = authed.put(f"/api/images/{img2}/annotations", json=dup)
+    assert r.status_code == 422 and "дважды" in r.json()["detail"]
+
+
+def test_dedupe_assigned(authed, app):
+    import numpy as np
+    from sqlmodel import Session, select
+
+    from catdetect.maintenance import dedupe_assigned
+    from catdetect.models import Annotation
+
+    mask = authed.post("/api/identities", json={"name": "Маск", "species": "cat"}).json()
+    rec, eng = app.state.runtime.recorder, app.state.engine
+    frame = np.zeros((60, 80, 3), np.uint8)
+    img_dup = rec.save_frame(None, frame, [{"box": [0.1, 0.1, 0.4, 0.4], "species": "cat", "conf": 0.9},
+                                           {"box": [0.11, 0.11, 0.41, 0.41], "species": "cat", "conf": 0.5}])
+    img_two = rec.save_frame(None, frame, [{"box": [0.1, 0.1, 0.3, 0.3], "species": "cat", "conf": 0.9},
+                                           {"box": [0.6, 0.6, 0.9, 0.9], "species": "cat", "conf": 0.5}])
+    with Session(eng) as s:  # как в старых данных: обе карточки кадра в одной папке
+        for a in s.exec(select(Annotation)).all():
+            a.state, a.identity_id = "assigned", mask["id"]; s.add(a)
+        s.commit()
+    dry = dedupe_assigned(eng)
+    assert dry == {"frames": 2, "removed_duplicate_boxes": 1, "returned_to_pending": 1, "applied": False}
+    assert dedupe_assigned(eng, apply=True)["applied"]
+    with Session(eng) as s:
+        dup = s.exec(select(Annotation).where(Annotation.image_id == img_dup)).all()
+        two = s.exec(select(Annotation).where(Annotation.image_id == img_two)).all()
+    assert len(dup) == 1 and dup[0].conf == 0.9
+    assert sorted(a.state for a in two) == ["assigned", "pending"]
+    assert dedupe_assigned(eng)["frames"] == 0
