@@ -1,12 +1,64 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { mdiCheckDecagramOutline, mdiCloseCircleOutline, mdiDeleteOutline, mdiPowerStandby, mdiSchool, mdiTextBoxOutline } from "@mdi/js";
+import { mdiCheckDecagramOutline, mdiChevronDown, mdiChevronUp, mdiCloseCircleOutline, mdiDeleteOutline, mdiPowerStandby, mdiScaleBalance, mdiSchool, mdiTextBoxOutline } from "@mdi/js";
 import Hint from "./Hint";
 import Icon from "./Icon";
 import { useToast } from "./Toast";
-import { Identity, MlModel, TrainingJob, api, fmtTime } from "../api";
+import { Comparison, Identity, MlModel, SPECIES_LABEL, Species, TrainingJob, api, fmtTime } from "../api";
 import { useApi, useInterval } from "../hooks";
 
-const KIND = { detector: "Поиск на кадре (детектор)", classifier: "Узнавание: кто именно" } as const;
+const KIND = { detector: "Поиск на кадре (детектор)", classifier: "Узнавание: кто именно", compare: "Сравнение моделей поиска" } as const;
+
+const VERDICT: Record<Comparison["verdict"], [string, string]> = {
+  better: ["ok", "лучше"],
+  worse: ["danger", "хуже"],
+  same: ["", "примерно так же"],
+  current: ["", "активная"],
+};
+
+const COLUMNS: [keyof Pick<Comparison["rows"][number], "precision" | "recall" | "mAP50" | "mAP50-95">, string, string][] = [
+  ["precision", "Нет ложных", "precision: доля находок, которые действительно объект. Ниже — больше ложных срабатываний (тени, коврики)."],
+  ["recall", "Не пропускает", "recall: доля объектов на кадрах, которые модель нашла. Ниже — больше пропусков на отдельных кадрах."],
+  ["mAP50", "mAP50", "Общая оценка «находит и не ошибается», рамка засчитывается при совпадении хотя бы наполовину."],
+  ["mAP50-95", "mAP50-95", "То же, но со строгими требованиями к точности рамки. По этой оценке выносится вывод «лучше/хуже»."],
+];
+
+/** Таблица «было/стало»: модели на одних и тех же проверочных кадрах, лучшее значение в столбце подсвечено. */
+function ComparisonTable({ c }: { c: Comparison }) {
+  const species = (["cat", "dog", "person"] as Species[]).filter((sp) => c.rows.some((r) => r.per_class[sp] != null));
+  const best = (get: (r: Comparison["rows"][number]) => number | null | undefined) =>
+    Math.max(...c.rows.map((r) => get(r) ?? -1));
+  const cell = (v: number | null | undefined, top: number) =>
+    v == null ? <td className="muted">—</td> : <td className={v === top && c.rows.length > 1 ? "best-cell" : ""}>{v.toFixed(3)}</td>;
+  const objects = c.val_objects
+    ? (Object.entries(c.val_objects) as [Species, number][]).filter(([, n]) => n).map(([sp, n]) => `${SPECIES_LABEL[sp].toLowerCase()} ${n}`).join(", ")
+    : "";
+  return (
+    <div className="stack" style={{ gap: 8, padding: "4px 0 8px" }}>
+      <div className="small muted">
+        Проверка на {c.val_images} кадрах{objects && ` (объектов: ${objects})`}, на которых ни одна модель не обучалась · {fmtTime(c.date)}.
+        {c.verdict !== "current" && <> Вывод: <b>{VERDICT[c.verdict][1]}</b>, чем «{c.reference}».</>}
+      </div>
+      <table className="compare-table">
+        <thead>
+          <tr>
+            <th>Модель</th>
+            {COLUMNS.map(([k, label, hint]) => <th key={k}><span className="label-text">{label}<Hint>{hint}</Hint></span></th>)}
+            {species.map((sp) => <th key={sp}>{SPECIES_LABEL[sp]}<span className="muted"> mAP50-95</span></th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {c.rows.map((r) => (
+            <tr key={r.key}>
+              <td>{r.label}{r.active && <span className="badge on small" style={{ marginLeft: 6 }}>активна</span>}</td>
+              {COLUMNS.map(([k]) => <Fragment key={k}>{cell(r[k], best((x) => x[k]))}</Fragment>)}
+              {species.map((sp) => <Fragment key={sp}>{cell(r.per_class[sp], best((x) => x.per_class[sp]))}</Fragment>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 const STATUS: Record<TrainingJob["status"], string> = { queued: "в очереди", running: "идёт", done: "готово", failed: "ошибка", cancelled: "отменено" };
 
 interface Stats {
@@ -35,6 +87,7 @@ export default function ModelsPanel() {
   const [epochs, setEpochs] = useState<Record<string, number>>({ detector: 60, classifier: 40 });
   const [error, setError] = useState<string | null>(null);
   const [openLog, setOpenLog] = useState<number | null>(null);
+  const [openCmp, setOpenCmp] = useState<number | null>(null);
   const [log, setLog] = useState("");
 
   const running = jobs?.some((j) => j.status === "running" || j.status === "queued");
@@ -51,8 +104,9 @@ export default function ModelsPanel() {
     for (const j of jobs ?? []) {
       const prev = prevStatus.current[j.id];
       if (prev && (prev === "running" || prev === "queued") && prev !== j.status) {
-        if (j.status === "done") toast.success(`${KIND[j.kind]}: обучение завершено — сравните метрики и активируйте модель`);
-        else if (j.status === "failed") toast.error(`${KIND[j.kind]}: обучение не удалось — ${j.message}`);
+        if (j.status === "done" && j.kind === "compare") toast.success(j.message.replace(/^Готово: /, "Сравнение готово: "));
+        else if (j.status === "done") toast.success(`${KIND[j.kind]}: обучение завершено${j.kind === "detector" ? " — смотрите сравнение в таблице моделей" : " — сравните метрики и активируйте модель"}`);
+        else if (j.status === "failed") toast.error(`${KIND[j.kind]}: не удалось — ${j.message}`);
       }
       prevStatus.current[j.id] = j.status;
     }
@@ -85,6 +139,16 @@ export default function ModelsPanel() {
     await api(`/api/models/deactivate?kind=${kind}`, { method: "POST" });
     toast.success(kind === "detector" ? "Используется стандартная модель поиска" : "Узнавание выключено");
     reloadModels();
+  };
+  const compareModel = async (m: MlModel) => {
+    try {
+      await api(`/api/models/${m.id}/compare`, { method: "POST" });
+      toast.info(`Сравнение «${m.name}» запущено — займёт несколько минут`);
+      setOpenCmp(m.id);
+      reloadJobs();
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
   };
   const removeModel = async (m: MlModel) => {
     if (!confirm(`Удалить модель «${m.name}»?`)) return;
@@ -185,10 +249,29 @@ export default function ModelsPanel() {
               </td>
             </tr>
             {models?.models.map((m) => (
-              <tr key={m.id}>
+              <Fragment key={m.id}>
+              <tr>
                 <td>{m.name}</td>
                 <td>{KIND[m.kind]}</td>
-                <td><Metrics m={m.metrics} /></td>
+                <td>
+                  <Metrics m={m.metrics} />
+                  {m.kind === "detector" && (
+                    <div className="row small" style={{ marginTop: 4 }}>
+                      {m.comparison && m.comparison.verdict !== "current" && (
+                        <span className={`badge ${VERDICT[m.comparison.verdict][0]}`}>{VERDICT[m.comparison.verdict][1]}, чем «{m.comparison.reference}»</span>
+                      )}
+                      {m.comparison && (
+                        <button className="small ghost" onClick={() => setOpenCmp(openCmp === m.id ? null : m.id)}>
+                          <Icon path={openCmp === m.id ? mdiChevronUp : mdiChevronDown} size={14} />Сравнение
+                        </button>
+                      )}
+                      <button className="small ghost" disabled={!!running} onClick={() => compareModel(m)}
+                        title="Сравнить с активной и стандартной моделью на одних и тех же проверочных кадрах">
+                        <Icon path={mdiScaleBalance} size={14} />{m.comparison ? "Пересравнить" : "Сравнить"}
+                      </button>
+                    </div>
+                  )}
+                </td>
                 <td className="small muted">{fmtTime(m.created_at)}</td>
                 <td style={{ textAlign: "right" }}>
                   {m.active ? (
@@ -204,6 +287,10 @@ export default function ModelsPanel() {
                   )}
                 </td>
               </tr>
+              {openCmp === m.id && m.comparison && (
+                <tr><td colSpan={5}><ComparisonTable c={m.comparison} /></td></tr>
+              )}
+              </Fragment>
             ))}
           </tbody>
         </table>

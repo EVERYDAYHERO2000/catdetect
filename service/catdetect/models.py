@@ -161,6 +161,8 @@ class MlModel(SQLModel, table=True):
     metrics: dict[str, Any] = _json(dict)
     # для классификатора: {"имя класса": identity_id}
     classes: dict[str, Any] = _json(dict)
+    # сравнение с активной и стандартной моделью на одних проверочных кадрах (compare.py)
+    comparison: Optional[dict[str, Any]] = _json()
     active: bool = False
 
 

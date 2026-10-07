@@ -52,7 +52,7 @@ class TrainingManager:
         with self._lock:
             if self.busy:
                 raise RuntimeError("Уже идёт обучение — дождитесь окончания")
-            merged = {**DEFAULT_PARAMS[kind], **{k: v for k, v in params.items() if v is not None}}
+            merged = {**DEFAULT_PARAMS.get(kind, {}), **{k: v for k, v in params.items() if v is not None}}
             with Session(self.engine) as s:
                 job = TrainingJob(kind=kind, params=merged)
                 s.add(job)
@@ -126,6 +126,23 @@ def _clean_metrics(metrics: dict) -> dict:
     return out
 
 
+VERDICT_TEXT = {
+    "better": "лучше, чем «{ref}» — стоит активировать",
+    "worse": "хуже, чем «{ref}»",
+    "same": "примерно так же, как «{ref}»",
+    "current": "это активная модель",
+}
+
+
+def _compare(engine, settings, ds_dir: Path, model_id: int, job_id: int) -> str:
+    """Сравнение после обучения или по кнопке; возвращает итог для сообщения задачи."""
+    from .compare import compare_detectors
+
+    res = compare_detectors(engine, settings, ds_dir, model_id, os.environ.get("CATDETECT_TRAIN_DEVICE"),
+                            progress=lambda msg: _update(engine, job_id, message=msg))
+    return f"сравнение на {res['val_images']} кадрах: {VERDICT_TEXT[res['verdict']].format(ref=res['reference'])}"
+
+
 def run_job(job_id: int) -> None:
     from ultralytics import YOLO
 
@@ -147,6 +164,12 @@ def run_job(job_id: int) -> None:
     ds_dir = settings.datasets_dir / f"{kind}_{job_id}"
     class_map: dict[str, int] = {}
     try:
+        if kind == "compare":  # только сравнение уже обученной модели
+            export_detect(engine, settings.data_dir, ds_dir)
+            summary = _compare(engine, settings, ds_dir, int(params["model_id"]), job_id)
+            _update(engine, job_id, status="done", progress=1.0, finished_at=utcnow(),
+                    model_id=int(params["model_id"]), message=f"Готово: {summary}")
+            return
         if kind == "detector":
             data = str(export_detect(engine, settings.data_dir, ds_dir))
             base = settings.models_dir / "base" / settings.base_detector
@@ -185,8 +208,13 @@ def run_job(job_id: int) -> None:
             s.commit()
             s.refresh(m)
             model_id = m.id
-        _update(engine, job_id, status="done", progress=1.0, finished_at=utcnow(), model_id=model_id,
-                message="Готово — активируйте модель, если метрики устраивают")
+        message = "Готово — активируйте модель, если метрики устраивают"
+        if kind == "detector":
+            try:
+                message = f"Готово: {_compare(engine, settings, ds_dir, model_id, job_id)}"
+            except Exception:  # noqa: BLE001 — сравнение не должно портить результат обучения
+                log.exception("Сравнение после обучения не удалось")
+        _update(engine, job_id, status="done", progress=1.0, finished_at=utcnow(), model_id=model_id, message=message)
     except Exception as e:  # noqa: BLE001
         log.exception("Обучение %s провалилось", job_id)
         _update(engine, job_id, status="failed", finished_at=utcnow(), message=str(e)[:500])

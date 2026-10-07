@@ -134,3 +134,26 @@ def test_stream_opened_only_on_motion(monkeypatch):
     always = CameraWorker(spec(), rt)  # по умолчанию поток держится всегда
     always._manage_stream(0.0, active=False)
     assert always.reader is not None
+
+
+def test_compare_verdict_and_base_remap(tmp_path):
+    from catdetect.compare import _base_dataset, verdict
+
+    ref = {"mAP50-95": 0.74}
+    assert verdict({"mAP50-95": 0.78}, ref) == "better"
+    assert verdict({"mAP50-95": 0.70}, ref) == "worse"
+    assert verdict({"mAP50-95": 0.745}, ref) == "same"
+
+    ds = tmp_path / "ds"
+    (ds / "images" / "val").mkdir(parents=True)
+    (ds / "labels" / "val").mkdir(parents=True)
+    (ds / "images" / "val" / "5.jpg").write_bytes(b"jpg")
+    # наши номера: cat=0, dog=1, person=2
+    (ds / "labels" / "val" / "5.txt").write_text("0 0.5 0.5 0.1 0.1\n1 0.2 0.2 0.1 0.1\n2 0.8 0.8 0.1 0.1")
+    coco = {0: "person", 1: "bicycle", 15: "cat", 16: "dog"}
+    data = _base_dataset(ds, coco, tmp_path / "base")
+    lines = (tmp_path / "base" / "labels" / "val" / "5.txt").read_text().splitlines()
+    assert [ln.split()[0] for ln in lines] == ["15", "16", "0"]
+    img = tmp_path / "base" / "images" / "val" / "5.jpg"
+    assert img.exists() and not img.is_symlink()  # копия, а не ссылка — иначе ultralytics найдёт старую разметку
+    assert data.exists()

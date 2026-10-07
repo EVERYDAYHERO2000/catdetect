@@ -133,7 +133,7 @@ export interface FullState {
 
 export interface TrainingJob {
   id: number;
-  kind: "detector" | "classifier";
+  kind: "detector" | "classifier" | "compare";
   status: "queued" | "running" | "done" | "failed" | "cancelled";
   created_at: string;
   started_at: string | null;
@@ -154,6 +154,28 @@ export interface MlModel {
   metrics: Record<string, number>;
   classes: Record<string, number>;
   active: boolean;
+  comparison?: Comparison | null;
+}
+
+export interface ComparisonRow {
+  key: "candidate" | "active" | "base";
+  label: string;
+  model_id: number | null;
+  active: boolean;
+  precision: number;
+  recall: number;
+  mAP50: number;
+  "mAP50-95": number;
+  per_class: Partial<Record<Species, number | null>>;
+}
+
+export interface Comparison {
+  date: string;
+  val_images: number;
+  val_objects?: Partial<Record<Species, number>>;
+  rows: ComparisonRow[];
+  reference: string;
+  verdict: "better" | "worse" | "same" | "current";
 }
 
 /** Адреса картинок с версией: id после удаления записей могут повторяться, и браузер не должен брать старое из кеша. */

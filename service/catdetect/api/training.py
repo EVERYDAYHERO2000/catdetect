@@ -64,6 +64,20 @@ def _reload_models(rt) -> None:
     threading.Thread(target=rt.reload_models, name="model-loader", daemon=True).start()
 
 
+@router.post("/api/models/{model_id}/compare")
+def compare_model(model_id: int, request: Request, _: Auth, db: Db):
+    """Сравнить модель поиска с активной и стандартной на одних проверочных кадрах (фоновая задача)."""
+    m = db.get(MlModel, model_id)
+    if m is None:
+        raise not_found("Модель")
+    if m.kind != "detector":
+        raise HTTPException(422, "Сравнение есть только для моделей поиска")
+    try:
+        return _manager(request).start("compare", {"model_id": model_id})
+    except RuntimeError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+
+
 @router.post("/api/models/{model_id}/activate")
 def activate_model(model_id: int, _: Auth, db: Db, rt: Rt):
     m = db.get(MlModel, model_id)
